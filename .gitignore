@@ -77,3 +77,7 @@ yarn-error.log*
 
 # OS metadata
 .DS_Store
+
+# Generated copies of the canonical web assets
+/public/app.js
+/public/styles.css

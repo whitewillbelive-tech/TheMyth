@@ -20,7 +20,7 @@
 
 기존 `myth/` Python 구현은 그대로 보존한다. 기존 `web/index.html`, `web/app.js`, `web/styles.css`를 그대로 제공하며, 두 최상위 탭과 전체 편집 UI를 교체하지 않는다. 화면의 추가 변경은 기존 백업 미이전 안내뿐이다.
 
-Sites는 제공된 Vinext/Cloudflare Workers JavaScript 진입점으로 배포한다. `app/route.ts`, `app/app.js/route.ts`, `app/styles.css/route.ts`가 기존 정적 자산을 제공하고, `app/api/[...path]/route.ts`가 기존 API를 `sites/api.js`와 `sites/store.js`에 연결한다. Python Uvicorn 프로세스나 로컬 SQLite 파일을 호스팅에서 실행한다고 가정하지 않는다.
+Sites는 제공된 Vinext/Cloudflare Workers JavaScript 진입점으로 배포한다. `app/route.ts`가 기존 HTML을 제공하고, `scripts/sync-web-assets.mjs`가 기존 CSS·JavaScript를 `public/`으로 복사하여 정적 자산으로 제공한다. `app/api/[...path]/route.ts`가 기존 API를 `sites/api.js`와 `sites/store.js`에 연결한다. Python Uvicorn 프로세스나 로컬 SQLite 파일을 호스팅에서 실행한다고 가정하지 않는다.
 
 `.openai/hosting.json`의 `DB`는 D1, `BUCKET`은 R2다. 실제 저장소는 Sites가 이 프로젝트에 프로비저닝한다. D1 데이터베이스 ID를 임의로 만들거나 다른 Site의 바인딩을 사용하지 않는다. D1의 8개 업무 컬렉션은 기존 `{id, record JSON}` 구조를 보존한다. `metadata`와 `schema_migrations`도 스키마에 남긴다. Drizzle 마이그레이션 이력은 별도로 관리한다.
 
@@ -48,7 +48,7 @@ Sites는 제공된 Vinext/Cloudflare Workers JavaScript 진입점으로 배포�
 4. 기존 UI와 데이터 계약을 유지하며 수정한다. `npm run test:sites`, `node --check web/app.js`, 필요한 Python 회귀 테스트를 수행한다. 스키마 변경은 append-only migration으로 추가한다.
 5. Sites build helper로 검증/빌드하고 source helper로 정확한 소스 커밋을 push·패키징한다.
 6. 소유자 전용이 확인되면 `save_version_and_deploy_private`를 사용한다. 이미 저장된 버전은 재저장하지 않고 해당 version_id로 배포한다.
-7. terminal 성공 상태와 운영 URL을 확인한다. GitHub `work`에도 검증된 같은 커밋을 fast-forward push한다. GitHub `main`을 덮거나 강제 push하지 않는다.
+7. terminal 성공 상태와 운영 URL을 확인한다. GitHub `work`에도 검증된 소스를 반영한다. 일반 Git 인증이 없는 환경에서는 연결된 GitHub API로 tree/commit을 생성하고 expected_sha를 지정하여 분기 변경을 보호한다. 이 경우 커밋 SHA는 Sites와 달라도 반드시 Git tree SHA가 동일한지 비교하고 두 커밋을 기록한다. GitHub `main`을 덮거나 강제 push하지 않는다.
 8. 기존 원고의 실제 데이터는 Git 소스와 별개다. 재배포 때 초기화·seed·테스트 데이터 가져오기를 하지 않는다.
 
 ## 검증 명령
