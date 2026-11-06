@@ -827,6 +827,9 @@ function render() {
   } else if (["story", "book"].includes(ui.view)) page.innerHTML = writing();
   else if (ui.view === "trash") page.innerHTML = trashView();
   else page.innerHTML = archive();
+  if (db.meta?.migration_status === "backup_missing") {
+    page.insertAdjacentHTML("afterbegin", `<section class="migration-notice" role="status"><div><strong>기존 자료 이전 대기</strong><p>이 주소에는 아직 기존 작업실의 백업을 가져오지 않았습니다. 기존 자료와 미저장 초안은 자동으로 옮겨지지 않습니다.</p></div><button class="button ghost small" data-action="backup">백업 가져오기</button></section>`);
+  }
   bindForms();
 }
 function openDialog(title, html, onSubmit, submit = "저장", wide = false) {

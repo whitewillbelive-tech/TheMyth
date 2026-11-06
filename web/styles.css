@@ -3146,3 +3146,9 @@ dialog::backdrop {
 .page-header > div:first-child {
   min-width: 0;
 }
+
+/* Hosted move status: original records are imported explicitly. */
+.migration-notice { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:16px 20px; margin-bottom:24px; border:1px solid #d9c79c; border-radius:8px; background:#fcf7eb; color:#615133; }
+.migration-notice strong { font-size:14px; }
+.migration-notice p { margin:6px 0 0; font-size:12px; line-height:1.65; }
+@media(max-width:640px) { .migration-notice { align-items:flex-start; flex-direction:column; gap:12px; } }

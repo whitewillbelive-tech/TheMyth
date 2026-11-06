@@ -1,5 +1,7 @@
 # THE MYTH — Work 인계 시작점
 
+> 아래는 커밋 `382a606` 당시의 보존 기록입니다. 후속 Sites 연결 식별자·D1 어댑터·데이터 이전 대기 상태·개발 절차는 [docs/SITES_CONNECTION.md](docs/SITES_CONNECTION.md)가 최신 안내입니다.
+
 이번 단계는 기존 결과물 보존과 이전 준비까지 완료했으며, 새 Site 생성·D1 생성·가져오기·서비스 배포는 수행하지 않았습니다.
 
 - 저장소: https://github.com/whitewillbelive-tech/TheMyth/tree/work

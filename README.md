@@ -2,7 +2,7 @@
 
 《The Myth》를 위한 독립적인 세계관 아카이브와 집필 워크스테이션입니다. 본편과 외전+사상집이 같은 전역 객체를 참조하고, 데이터와 원고는 서버의 SQLite 파일에 저장합니다.
 
-ChatGPT Sites 이전 작업은 [WORK_HANDOFF.md](WORK_HANDOFF.md)부터 읽으세요. 기존 구현은 `work` 브랜치에 보존하며, 현재 단계에서는 새 Site 생성이나 배포를 수행하지 않았습니다.
+ChatGPT Sites 연결과 후속 개발은 [docs/SITES_CONNECTION.md](docs/SITES_CONNECTION.md)를 읽으세요. 기존 Python 구현은 보존되어 있으며, 같은 화면과 데이터 계약을 Sites의 D1·R2 저장소에 연결하는 호스팅 어댑터를 추가했습니다. 기존 비공개 사용자 백업의 실제 이전은 아직 대기 중입니다. 이전 Codex 인계 기록은 [WORK_HANDOFF.md](WORK_HANDOFF.md)에 남깁니다.
 
 ## 실행
 
