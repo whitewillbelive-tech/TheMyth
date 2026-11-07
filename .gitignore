@@ -81,3 +81,4 @@ yarn-error.log*
 # Generated copies of the canonical web assets
 /public/app.js
 /public/styles.css
+/public/atlas-*.js

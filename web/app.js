@@ -1,3 +1,5 @@
+import { mountAtlas } from "/atlas-view.js";
+
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const h = (value) =>
@@ -87,6 +89,7 @@ let ui = {
   ...prefs,
 };
 let saveStatus = "모든 변경사항 저장됨";
+let disposeAtlas;
 let documentTimer,
   pendingWrite = Promise.resolve(),
   toastTimer;
@@ -404,7 +407,8 @@ function archive() {
         : ui.view === "thought"
           ? "인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다."
           : "하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",
-      button("+ 새 자료", "new-entity", "", "primary"),
+      (ui.view === "spaces" ? button("3D 지도", "view", "atlas", "ghost") : "") +
+        button("+ 새 자료", "new-entity", "", "primary"),
     ) +
     `${ui.query ? searchDocuments() : ""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("", "모든 유형", ui.kind)}${Object.entries(
       names,
@@ -816,10 +820,16 @@ function trashView() {
   );
 }
 function render() {
+  disposeAtlas?.();
+  disposeAtlas = undefined;
   persist();
   $("#app").innerHTML = shell();
   const page = $("#page");
   if (ui.view === "overview") page.innerHTML = overview();
+  else if (ui.view === "atlas") {
+    page.innerHTML = header("WORLD ARCHIVE / SPACE", "3D 우주 지도", "기존 자료를 읽기 전용으로 탐색합니다.", button("← 공간 목록", "view", "spaces", "ghost")) + '<div id="atlas-root"></div>';
+    disposeAtlas = mountAtlas($("#atlas-root"), active("entities"), active("relations"));
+  }
   else if (ui.view === "groups") page.innerHTML = groupsView();
   else if (ui.view === "timeline") {
     page.innerHTML = timelineView();
