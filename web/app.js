@@ -465,6 +465,7 @@ function listRow(e, depth = 0) {
   return `<button class="list-row ${ui.selected === e.id ? "selected" : ""}" data-action="select" data-id="${e.id}" style="padding-left:${20 + depth * 16}px"><span class="list-name">${h(e.name)}</span><span class="list-meta">${h(spatialLabel(e))} ${e.kind !== "character" && !["galaxy","planet","city"].includes(spatialType(e)) && e.data?.subtype ? "· " + h(e.data.subtype) : ""}${e.data?.status ? " · " + h(e.data.status) : ""}</span></button>`;
 }
 function spaceTree(list, parent = null, depth = 0, seen = new Set()) {
+  list=list.filter(e=>spatialType(e)!=="universe");
   const rows = list
       .filter(
         (e) =>
@@ -1904,7 +1905,7 @@ document.addEventListener(
         ui.view = e.kind;
       } else {
         ui.tab = ["thought", "thinker"].includes(e.kind) ? "writing" : "main";
-        ui.view = ["character","event","setting"].includes(e.kind) ? e.kind : e.kind === "civilization" ? "civilization" : e.kind === "organization" ? "organization" : ["space","planet"].includes(e.kind) ? "spaces" : ["title","generation"].includes(e.kind) ? "generations" : "archive";
+        ui.view = ["character","event","setting"].includes(e.kind) ? e.kind : e.kind === "civilization" ? "civilization" : e.kind === "organization" ? "organization" : ["space","planet"].includes(e.kind) ? spatialType(e)==="universe"?"archive":"spaces" : ["title","generation"].includes(e.kind) ? "generations" : "archive";
         if (ui.tab === "main") setMainContext(contextForEntity(db,e,mainContext()));
         if (["spaces","setting","timeline","atlas"].includes(ui.view)) ui.backgroundOpen = true;
       }
