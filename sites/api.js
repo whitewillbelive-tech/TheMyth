@@ -1,5 +1,5 @@
 import { Store, WRITABLE, fail, validId } from './store.js';
-import { reconcileCatalog, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation } from './main-workspace.js';
+import { reconcileCatalog, createCharacter, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation } from './main-workspace.js';
 import { matchesTitleScope } from '../web/main-domain.js';
 
 const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin'};
@@ -70,6 +70,9 @@ export async function handleApi(request,env) {
     if(path==='/api/catalog/reconcile'&&method==='POST') {
       await body(request);
       const result=reconcileCatalog(store); await store.commit(); return json(result);
+    }
+    if(path==='/api/characters'&&method==='POST') {
+      const result=createCharacter(store,await body(request)); await store.commit(); return json(result,201);
     }
     const appearanceMatch=path.match(/^\/api\/characters\/([^/]+)\/appearances$/);
     if(appearanceMatch&&method==='POST') {

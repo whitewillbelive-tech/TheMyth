@@ -3235,6 +3235,7 @@ dialog::backdrop {
 .collective-tabs .button { min-width:75px; }
 .character-slot-tabs { margin:18px 0; padding-bottom:14px; border-bottom:1px solid var(--line); }
 .character-slot-tabs > button { max-width:100%; overflow-wrap:anywhere; }
+.new-character-panel[hidden], .character-slot-tabs > [data-new-character-slot][hidden] { display:none; }
 .appearance-section { padding:16px 0; border-bottom:1px solid var(--line); }
 .appearance-section .section-title { flex-wrap:wrap; }
 .appearance-section .section-title .muted { font-size:11px; }

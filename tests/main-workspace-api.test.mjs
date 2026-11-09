@@ -32,6 +32,82 @@ async function createLegacyCatalog(f) {
   return generations;
 }
 
+scenario('character creation accepts unfinished identity and empty optional fields without title links', async f => {
+  const first = await f.req('POST', '/api/characters', {});
+  const second = await f.req('POST', '/api/characters', { name: '   ', description: null, data: { role: null, aliases: null, time: null, notes: null, origin_planet_id: null } });
+  assert.equal(first.character.kind, 'character');
+  assert.equal(first.character.name, '이름 미정');
+  assert.equal(first.character.description, '');
+  assert.deepEqual(first.appearances, []);
+  assert.equal(second.character.name, '이름 미정');
+  assert.notEqual(first.character.id, second.character.id);
+  assert.equal(second.character.data.role, '');
+  assert.deepEqual(second.character.data.aliases, []);
+  assert.deepEqual(second.character.data.time, { mode: 'unknown' });
+  assert.equal(second.character.data.notes, '');
+  assert.equal(second.character.data.origin_planet_id, null);
+  assert.equal((await f.state()).relations.length, 0);
+  f.reopen();
+  assert.deepEqual(await f.record('entities', second.character.id), second.character);
+});
+
+scenario('character creation atomically stores one identity and selected title settings with common inheritance', async f => {
+  const { titles } = await catalog(f), first = titles[0], second = titles[4];
+  const planet = await f.entity('planet', '출신 행성');
+  const before = await f.state();
+  const result = await f.req('POST', '/api/characters', {
+    name: '새 인물', description: '', sort_order: 3,
+    data: { origin_planet_id: planet.id, role: '공통 역할', notes: '공통 메모' },
+    title_ids: [first.id, second.id],
+    title_settings: {
+      [first.id]: { overrides: { name: '작품 이름', role: null, description: '' }, inherit_fields: ['notes'] },
+      [second.id]: { overrides: {}, inherit_fields: ['role'] },
+    },
+  });
+  assert.equal(result.character.kind, 'character');
+  assert.equal(result.character.data.origin_planet_id, planet.id);
+  assert.equal(result.appearances.length, 2);
+  let state = await f.state();
+  assert.equal(state.entities.filter(row => row.kind === 'character').length, 1);
+  for (const record of before.entities) assert.deepEqual(state.entities.find(row => row.id === record.id), record);
+  const a = appearanceFor(state, result.character.id, first.id), b = appearanceFor(state, result.character.id, second.id);
+  assert.equal(a.source_id, result.character.id);
+  assert.equal(b.source_id, result.character.id);
+  assert.equal(resolveTitleProfile(result.character, a).values.name, '작품 이름');
+  assert.equal(resolveTitleProfile(result.character, a).values.role, '');
+  assert.equal(resolveTitleProfile(result.character, a).values.notes, '공통 메모');
+  assert.equal(resolveTitleProfile(result.character, b).values.role, '공통 역할');
+  f.reopen(); state = await f.state();
+  assert.deepEqual(appearanceFor(state, result.character.id, first.id), a);
+  assert.deepEqual(appearanceFor(state, result.character.id, second.id), b);
+});
+
+scenario('invalid title or slot input rejects character creation without any partial records', async f => {
+  const { titles } = await catalog(f), title = titles[0], other = titles[1];
+  const planet = await f.entity('planet', '잘못된 타이틀 유형');
+  const archived = await f.entity('title', '삭제한 작품');
+  await f.req('DELETE', `/api/entities/${archived.id}`);
+  const before = await f.state();
+  const invalid = [
+    { title_ids: [title.id, 'missing'] },
+    { title_ids: [planet.id] },
+    { title_ids: [archived.id] },
+    { title_ids: [title.id, title.id] },
+    { title_ids: [''] },
+    { title_ids: [title.id], title_settings: { [other.id]: { overrides: { role: '연결되지 않은 작품' } } } },
+    { title_ids: [title.id], title_settings: { [title.id]: { overrides: { unknown_field: '허용되지 않음' } } } },
+    { title_ids: [title.id], title_settings: { [title.id]: { overrides: { role: '개별' }, inherit_fields: ['role'] } } },
+    { title_ids: [title.id], title_settings: { [title.id]: { overrides: { activity_planet_id: title.id } } } },
+    { data: { origin_planet_id: title.id } },
+    { name: 123 },
+    { data: { role: 123 } },
+  ];
+  for (const payload of invalid) {
+    await f.error('POST', '/api/characters', payload, 422);
+    await sameRecords(f, before);
+  }
+});
+
 scenario('catalog preserves legacy IDs, adds six real Universe titles and is idempotent after user edits', async f => {
   const generations = await createLegacyCatalog(f);
   const extra = await f.create('entities', { kind: 'title', name: '사용자의 다른 작품', sort_order: 40, data: { generation_id: generations[1].id, custom: 'untouched' } });

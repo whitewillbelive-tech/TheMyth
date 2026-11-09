@@ -42,6 +42,64 @@ class MainWorkspaceTests(unittest.TestCase):
         revisions = {row["id"]: row["revision"] for row in all_relations if row.get("type") == "appearance" and character["id"] in (row.get("source_id"), row.get("target_id"))}
         return self.req("POST", f"/api/characters/{character['id']}/appearances", {"revision": character["revision"], "title_ids": title_ids, "appearance_revisions": revisions, **extra})
 
+    def test_character_creation_accepts_unknown_optional_details_and_blank_name(self):
+        for payload in ({}, {"name": "   ", "description": None, "data": None}, {"kind": "planet", "data": {"aliases": None, "presence": None, "role": None, "appearance": None, "activity_planet_id": None, "organization_ids": None, "time": None}}):
+            with self.subTest(payload=payload):
+                response = self.client.post("/api/characters", json=payload)
+                self.assertEqual(response.status_code, 201, response.text)
+                result = response.json()
+                self.assertEqual(result["character"]["kind"], "character")
+                self.assertEqual(result["character"]["name"], "이름 미정")
+                self.assertEqual(result["appearances"], [])
+                if payload.get("data"):
+                    self.assertEqual(result["character"]["data"]["presence"], "")
+                    self.assertEqual(result["character"]["data"]["aliases"], [])
+                    self.assertEqual(result["character"]["data"]["time"], {"mode": "unknown"})
+
+    def test_character_creation_saves_common_and_per_title_slots_atomically(self):
+        titles = self.catalog()["titles"]
+        a, b = titles[0]["id"], titles[4]["id"]
+        planet = self.entity("planet", "Origin")
+        result = self.req("POST", "/api/characters", {
+            "name": "[TEST] new shared identity",
+            "data": {"origin_planet_id": planet["id"], "abilities": "[TEST] shared", "species": "[TEST] legacy retained"},
+            "title_ids": [a, b],
+            "title_settings": {
+                a: {"overrides": {"name": "[TEST] title name", "notes": None}, "inherit_fields": ["abilities"]},
+                b: {"overrides": {"abilities": "[TEST] alternate", "organization_ids": None}},
+            },
+        })
+        self.assertEqual(len(result["appearances"]), 2)
+        self.assertEqual(result["character"]["data"]["origin_planet_id"], planet["id"])
+        self.assertEqual(result["character"]["data"]["species"], "[TEST] legacy retained")
+        self.assertEqual({row["source_id"] for row in result["appearances"]}, {result["character"]["id"]})
+        slot_a, slot_b = result["appearances"]
+        self.assertEqual(slot_a["data"]["overrides"], {"name": "[TEST] title name", "notes": ""})
+        self.assertEqual(slot_a["data"]["inherit_fields"], ["abilities"])
+        self.assertEqual(slot_b["data"]["overrides"], {"abilities": "[TEST] alternate", "organization_ids": []})
+
+    def test_invalid_character_creation_never_leaves_partial_identity_or_slots(self):
+        title = self.catalog()["titles"][0]["id"]
+        org = self.entity("organization", "Not a planet")
+        before = self.state()
+        invalid = [
+            {"name": 1}, {"data": []}, {"title_ids": ["missing"]}, {"title_ids": [title, title]},
+            {"title_ids": [org["id"]]}, {"title_settings": {title: {}}},
+            {"title_ids": [title], "title_settings": {title: {"overrides": {"activity_planet_id": org["id"]}}}},
+            {"title_ids": [title], "title_settings": {title: {"overrides": {"origin_planet_id": org["id"]}}}},
+            {"title_ids": [title], "title_settings": {title: {"overrides": {"abilities": "x"}, "inherit_fields": ["abilities"]}}},
+            {"title_ids": [title], "title_settings": {title: {"inherit_fields": [["bad"]]}}},
+            {"data": {"activity_planet_id": org["id"]}, "title_ids": [title]},
+        ]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                response = self.client.post("/api/characters", json=payload)
+                self.assertGreaterEqual(response.status_code, 400, response.text)
+                self.assertLess(response.status_code, 500, response.text)
+                current = self.state()
+                for table in ("entities", "relations", "versions"):
+                    self.assertEqual(current[table], before[table])
+
     def test_catalog_is_explicit_preserves_ids_and_custom_records(self):
         before = self.state()
         old_generation = next(row for row in before["entities"] if row["id"] == "generation-undecided")

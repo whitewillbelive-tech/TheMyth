@@ -144,6 +144,70 @@ def _has_content(relation):
     return bool(data.get("overrides")) or any(key in data and data[key] != "" for key in ("role", "note")) or any(key not in {"overrides", "inherit_fields", "profile_schema", "exclusive", "role", "note"} for key in data)
 
 
+def create_character(store, db, payload):
+    """Create one identity and its optional title slots in the caller's transaction."""
+    if not isinstance(payload, dict):
+        fail("인물 정보는 객체여야 합니다.")
+    for key, label in (("name", "이름"), ("description", "설명")):
+        if payload.get(key) is not None and not isinstance(payload[key], str):
+            fail(f"{label}은 텍스트여야 합니다.")
+    if payload.get("data") is not None and not isinstance(payload["data"], dict):
+        fail("인물 설정은 객체여야 합니다.")
+
+    def optional_values(values):
+        result = copy.deepcopy(values)
+        for key, value in result.items():
+            if value is not None or key not in PROFILE_FIELDS:
+                continue
+            kind = PROFILE_FIELDS[key]
+            result[key] = [] if kind in ("aliases", "organizations") else None if kind in ("space", "planet") else {"mode": "unknown"} if kind == "time" else ""
+        return result
+
+    data = optional_values(payload.get("data") or {})
+    selected = payload.get("title_ids")
+    if selected is None:
+        selected = []
+    if not isinstance(selected, list) or any(not isinstance(value, str) or not value for value in selected) or len(set(selected)) != len(selected):
+        fail("등장 작품은 중복 없는 타이틀 ID 목록이어야 합니다.")
+    for title_id in selected:
+        _active_entity(store, db, title_id, "title")
+    settings = payload.get("title_settings")
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict):
+        fail("작품별 설정은 타이틀별 객체여야 합니다.")
+    slots = {}
+    for title_id, supplied in settings.items():
+        if title_id not in selected:
+            fail("등장 작품으로 선택한 타이틀의 설정만 저장할 수 있습니다.")
+        if not isinstance(supplied, dict):
+            fail("작품별 설정은 객체여야 합니다.")
+        if supplied.get("overrides") is not None and not isinstance(supplied["overrides"], dict):
+            fail("작품별 개별 설정은 객체여야 합니다.")
+        overrides = optional_values(supplied.get("overrides") or {})
+        inherited = supplied.get("inherit_fields")
+        if inherited is None:
+            inherited = []
+        if not isinstance(inherited, list) or any(not isinstance(key, str) or key not in PROFILE_FIELDS for key in inherited) or len(set(inherited)) != len(inherited):
+            fail("공통 설정으로 사용할 항목이 잘못되었습니다.")
+        if set(inherited).intersection(overrides):
+            fail("한 항목을 개별 설정과 공통 상속으로 동시에 저장할 수 없습니다.")
+        for key, value in overrides.items():
+            if key not in PROFILE_FIELDS:
+                fail(f"지원하지 않는 작품별 정보 항목: {key}")
+            _validate_profile_value(store, db, key, value)
+        slots[title_id] = {"overrides": overrides, "inherit_fields": inherited}
+    values = {"kind": "character", "name": (payload.get("name") or "").strip() or "이름 미정", "description": payload.get("description") or "", "data": data}
+    if payload.get("sort_order") is not None:
+        values["sort_order"] = payload["sort_order"]
+    character = store.create(db, "entities", values)
+    appearances = [store.create(db, "relations", {
+        "source_id": character["id"], "target_id": title_id, "type": "appearance",
+        "data": {"profile_schema": 1, **slots.get(title_id, {"overrides": {}, "inherit_fields": []})},
+    }) for title_id in selected]
+    return {"character": character, "appearances": appearances}
+
+
 def sync_appearances(store, db, character_id, payload):
     character = _active_entity(store, db, character_id, "character")
     _check_revision(character, payload.get("revision"))

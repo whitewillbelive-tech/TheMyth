@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .store import Store, WRITABLE, fail, timeline
-from .main_workspace import reconcile_catalog, sync_appearances, update_title_settings
+from .main_workspace import create_character, reconcile_catalog, sync_appearances, update_title_settings
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +71,11 @@ def create_app(db_path=None):
     def set_appearances(id: str, payload: dict = Body(...)):
         with store.transaction() as db:
             return sync_appearances(store, db, id, payload)
+
+    @app.post("/api/characters", status_code=201)
+    def create_main_character(payload: dict = Body(...)):
+        with store.transaction() as db:
+            return create_character(store, db, payload)
 
     @app.patch("/api/characters/{id}/title-settings/{title_id}")
     def set_title_settings(id: str, title_id: str, payload: dict = Body(...)):

@@ -157,11 +157,11 @@ async function api(path, method = "GET", body) {
     try {
       e = await res.json();
     } catch {}
-    throw new Error(
+    throw Object.assign(new Error(
       typeof e?.detail === "string"
         ? e.detail
         : JSON.stringify(e?.detail || e || `요청 실패 (${res.status})`),
-    );
+    ), { status: res.status });
   }
   return res.status === 204 ? null : res.json();
 }
@@ -426,11 +426,12 @@ const viewTitle = {
 };
 function archive() {
   const list = entityList(), selected = db.entities.find(x=>x.id===ui.selected&&!x.deleted_at);
+  const kind=defaultKind(), creation=button("+ " + names[kind],"new-entity",kind,"primary")+(ui.view==="spaces"?button("+ 행성","new-entity","planet","ghost"):"");
   const titleFilter = ui.tab === "main" ? "" : `<select id="title-filter" aria-label="타이틀 필터">${options(active("entities").filter(e=>e.kind==="title"),ui.title,"전체 타이틀")}</select>`;
-  return header(ui.tab==="main"?"WORLD ARCHIVE":"PHILOSOPHY ARCHIVE",viewTitle[ui.view]||"아카이브",ui.view==="spaces"?"공통 우주의 원본 계층을 유지하며 관련 공간을 탐색합니다.":ui.view==="thought"?"인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다.":ui.view==="generations"?"기존 ID를 유지하며 세대와 작품을 추가·편집·정렬합니다.":"하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",(ui.view==="spaces"?button("3D 지도","view","atlas","ghost"):"")+button(ui.view==="generations"?"+ 타이틀":"+ 새 자료","new-entity","","primary")+(ui.view==="generations"?button("+ 세대","new-generation","","ghost"):"")) + `${ui.query?searchDocuments():""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("","모든 유형",ui.kind)}${Object.entries(names).map(([k,n])=>option(k,n,ui.kind)).join("")}</select>${titleFilter}<select id="group-filter" aria-label="그룹 필터">${options(active("groups"),ui.group,"전체 그룹")}</select>${ui.query||ui.kind||ui.group||ui.tab!=="main"&&ui.title?button("필터 초기화","clear-filter","","ghost small"):""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view==="spaces"?"공간 계층":"자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view==="spaces"&&!ui.query&&!ui.kind&&!ui.group?spaceTree(list):list.map(e=>listRow(e)).join("")||empty("자료가 없습니다","새 자료를 만들거나 선택한 세대와 타이틀을 바꿔보세요.")}</div></section><section class="detail-panel">${selected?entityDetail(selected):empty("기록을 선택하세요","왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.",button("+ 첫 자료 추가","new-entity","","primary"))}</section></div>`;
+  return header(ui.tab==="main"?"WORLD ARCHIVE":"PHILOSOPHY ARCHIVE",viewTitle[ui.view]||"아카이브",ui.view==="spaces"?"공통 우주의 원본 계층을 유지하며 관련 공간을 탐색합니다.":ui.view==="thought"?"인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다.":ui.view==="generations"?"기존 ID를 유지하며 세대와 작품을 추가·편집·정렬합니다.":"하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",(ui.view==="spaces"?button("3D 지도","view","atlas","ghost"):"")+creation+(ui.view==="generations"?button("+ 세대","new-generation","","ghost"):"")) + `${ui.query?searchDocuments():""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("","모든 유형",ui.kind)}${Object.entries(names).map(([k,n])=>option(k,n,ui.kind)).join("")}</select>${titleFilter}<select id="group-filter" aria-label="그룹 필터">${options(active("groups"),ui.group,"전체 그룹")}</select>${ui.query||ui.kind||ui.group||ui.tab!=="main"&&ui.title?button("필터 초기화","clear-filter","","ghost small"):""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view==="spaces"?"공간 계층":"자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view==="spaces"&&!ui.query&&!ui.kind&&!ui.group?spaceTree(list):list.map(e=>listRow(e)).join("")||empty("자료가 없습니다","새 자료를 만들거나 선택한 세대와 타이틀을 바꿔보세요.")}</div></section><section class="detail-panel">${selected?entityDetail(selected):empty("기록을 선택하세요","왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.",button("+ " + names[kind] + " 추가","new-entity",kind,"primary"))}</section></div>`;
 }
 function listRow(e, depth = 0) {
-  return `<button class="list-row ${ui.selected === e.id ? "selected" : ""}" data-action="select" data-id="${e.id}" style="padding-left:${20 + depth * 16}px"><span class="list-name">${h(e.name)}</span><span class="list-meta">${names[e.kind] || e.kind} ${e.data?.subtype ? "· " + h(e.data.subtype) : ""}${e.data?.status ? " · " + h(e.data.status) : ""}</span></button>`;
+  return `<button class="list-row ${ui.selected === e.id ? "selected" : ""}" data-action="select" data-id="${e.id}" style="padding-left:${20 + depth * 16}px"><span class="list-name">${h(e.name)}</span><span class="list-meta">${names[e.kind] || e.kind} ${e.kind !== "character" && e.data?.subtype ? "· " + h(e.data.subtype) : ""}${e.data?.status ? " · " + h(e.data.status) : ""}</span></button>`;
 }
 function spaceTree(list, parent = null, depth = 0, seen = new Set()) {
   return (
@@ -545,13 +546,8 @@ function baseEntityDetail(e) {
 function entityFields(e) {
   const d = e.data || {};
   let html =
-    field("이름", input("name", e.name, "자료 이름", "required")) +
-    field(
-      "분류",
-      `<select name="kind" ${e.id ? "disabled" : ""}>${Object.entries(names)
-        .map(([k, n]) => option(k, n, e.kind))
-        .join("")}</select>`,
-    ) +
+    `<input type="hidden" name="kind" value="${h(e.kind)}">` +
+    field(e.kind === "character" ? "이름 · 미정 가능" : "이름", input("name", e.name, e.kind === "character" ? "비워두면 이름 미정으로 생성됩니다." : (names[e.kind] || "자료") + " 이름", e.kind === "character" ? "" : "required")) +
     field(
       "설명 · 기본 프로필",
       textarea(
@@ -562,10 +558,10 @@ function entityFields(e) {
       true,
     ) +
     field("상태", input("data_status", d.status, "예: 구상 / 집필 중 / 확정")) +
-    field(
+    (e.kind === "character" ? "" : field(
       "세부 분류",
       input("data_subtype", d.subtype, "예: 은하 / 무술 / 고유 분류"),
-    );
+    ));
   if (e.kind === "generation")
     html += field(
       "세대 번호 (목록 순서와 별개)",
@@ -594,22 +590,13 @@ function entityFields(e) {
         ),
       ) +
       field(
-        "출신 행성 · 기본 정체성",
+        "출신 행성",
         `<select name="data_origin_planet_id">${options(
           active("entities").filter((x) => x.kind === "planet"),
           d.origin_planet_id,
           "출신 행성 미정",
         )}</select>`,
-      ) +
-      field(
-        "출신 문명",
-        `<select name="data_civilization_id">${options(
-          active("entities").filter((x) => x.kind === "civilization"),
-          d.civilization_id,
-          "문명 미정",
-        )}</select>`,
-      ) +
-      field("종족", input("data_species", d.species, "미정"));
+      );
   if (e.kind === "character") html += commonCharacterFields(e);
   if (e.kind === "event") {
     const linkedTitles = e.id ? titleIdsForEntity(db,e) : [];
@@ -724,9 +711,13 @@ function entityFields(e) {
 }
 function readEntity(form, e = {}) {
   const fd = new FormData(form);
+  const kind = e.kind || fd.get("kind");
   let data = { ...(e.data || {}) };
   for (const [k, v] of fd.entries())
-    if (k.startsWith("data_")) data[k.slice(5)] = v || null;
+    if (k.startsWith("data_")) {
+      const key = k.slice(5), info = kind === "character" ? PROFILE_FIELDS.find(field=>field.key===key) : null;
+      data[key] = info && ["text", "textarea"].includes(info.type) ? String(v) : v || null;
+    }
   if (fd.has("data_number"))
     data.number =
       fd.get("data_number") === "" ? null : Number(fd.get("data_number"));
@@ -744,8 +735,8 @@ function readEntity(form, e = {}) {
     throw new Error("사용자 정의 정보는 JSON 객체여야 합니다.");
   data = { ...data, ...custom };
   return {
-    name: fd.get("name").trim(),
-    kind: fd.get("kind") || e.kind,
+    name: String(fd.get("name") || "").trim() || (kind === "character" ? "이름 미정" : ""),
+    kind,
     description: fd.get("description") || "",
     data,
     ...(fd.has("sort_order") ? {sort_order:Number(fd.get("sort_order") || 0)} : {}),
@@ -981,14 +972,15 @@ function defaultKind() {
   );
 }
 function newEntity(kind = defaultKind()) {
+  if (kind === "character") return newCharacter();
   const key = "new:" + kind;
   const draft = localDrafts[key];
-  const e = draft || { name: "", kind, description: "", data: kind === "title" ? {generation_id:ui.mainGeneration} : kind === "event" ? {title_id:ui.mainTitle || null} : {} };
+  const e = { ...(draft || { name: "", description: "", data: kind === "title" ? {generation_id:ui.mainGeneration} : kind === "event" ? {title_id:ui.mainTitle || null} : {} }), kind };
   openDialog(
     "새 " + names[kind],
     `<div class="form-grid">${entityFields(e)}</div>`,
     async (_, form) => {
-      const body = readEntity(form);
+      const body = readEntity(form,e);
       if (!body.name) throw new Error("이름을 입력하세요.");
       const result = await api("/entities", "POST", body);
       delete localDrafts[key];
@@ -996,21 +988,66 @@ function newEntity(kind = defaultKind()) {
       await refresh(false);
       ui.selected = result.id;
       render();
-      toast("새 자료를 기록했습니다.");
+      toast("새 " + names[kind] + " 기록을 만들었습니다.");
     },
-    "자료 만들기",
+    names[kind] + " 만들기",
     true,
   );
   restoreRaw($("#dialog-form"), draft?.raw);
   $("#dialog-form").addEventListener("input", () => {
     const form = $("#dialog-form");
     try {
-      localDrafts[key] = { ...readEntity(form), raw: rawForm(form) };
+      localDrafts[key] = { ...readEntity(form,e), raw: rawForm(form) };
     } catch {
       localDrafts[key] = { ...localDrafts[key], raw: rawForm(form) };
     }
     draftsPersist();
   });
+}
+function newCharacterTitleFields(title) {
+  const prefix = "newtitle_" + title.id + "_";
+  return `<section class="new-character-panel" data-new-character-panel="${h(title.id)}" hidden><div class="profile-heading"><h3>${h(title.name)} · 작품별 설정</h3><p>모든 항목은 선택 사항입니다. 공통 설정을 사용하거나, 이 작품에서 달라지는 정보만 기록하세요.</p></div><div class="title-profile-grid">${PROFILE_FIELDS.map(info=>`<section class="title-profile-field" data-profile-key="${info.key}"><div class="profile-field-heading"><label for="new-profile-${h(title.id)}-${info.key}">${h(info.label)}</label><span class="profile-source">공통 설정 상속</span></div><select id="new-profile-${h(title.id)}-${info.key}" name="${prefix}mode_${info.key}" data-profile-mode="${info.key}" aria-label="${h(title.name)} ${h(info.label)} 설정 방식">${option("common","공통 설정 사용","common")}${option("custom","타이틀별 개별 설정","common")}</select><div class="profile-value">${profileControl(info,info.type === "id-list" || info.type === "aliases" ? [] : info.type === "time" ? {mode:"unknown"} : "",prefix+"profile_"+info.key,true)}</div></section>`).join("")}</div></section>`;
+}
+function newCharacter() {
+  const key="new:character", draft=localDrafts[key], e={name:"",description:"",data:{},...draft,kind:"character"};
+  const titles=catalogGenerations(db).flatMap(g=>titlesForGeneration(db,g.id));
+  const selected=draft?.title_ids || (ui.mainTitle ? [ui.mainTitle] : []);
+  let currentSlot=draft?.active_slot || "common";
+  const checks=catalogGenerations(db).map(g=>`<fieldset><legend>${h(g.data?.number||"")}세대 · ${h(g.name)}</legend>${titlesForGeneration(db,g.id).map(t=>`<label class="appearance-choice"><input type="checkbox" name="title_ids" value="${h(t.id)}" ${selected.includes(t.id)?"checked":""}><span>${h(t.name)}</span></label>`).join("") || '<p class="muted">미정 · 확정된 타이틀 없음</p>'}</fieldset>`).join("");
+  openDialog("새 인물",`<p class="callout">아직 정하지 않은 항목은 모두 비워둘 수 있습니다. 이름을 비워두면 ‘이름 미정’으로 생성됩니다.</p><section class="appearance-section"><div class="section-title"><h3>등장 세대·타이틀</h3><span class="muted">여러 작품을 선택하거나 나중에 연결할 수 있습니다.</span></div><div class="appearance-grid">${checks}</div></section><nav class="character-slot-tabs" aria-label="새 인물 정보 슬롯"><button type="button" class="button active" data-new-character-slot="common">공통 설정</button>${titles.map(t=>`<button type="button" class="button ghost" data-new-character-slot="${h(t.id)}" hidden>${h(t.name)}</button>`).join("")}</nav><section class="new-character-panel" data-new-character-panel="common"><div class="profile-heading"><h3>공통 설정</h3><p>여러 작품에서 함께 사용하는 인물 정보입니다. 확정된 정보만 적고 나머지는 나중에 채우세요.</p></div><div class="form-grid">${entityFields(e)}</div></section>${titles.map(newCharacterTitleFields).join("")}`,async(_,form)=>{
+    const fd=new FormData(form), titleIds=fd.getAll("title_ids"), titleSettings={};
+    for(const titleId of titleIds) {
+      const prefix="newtitle_"+titleId+"_",entries=[...fd.entries()].filter(([name])=>name.startsWith(prefix)).map(([name,value])=>[name.slice(prefix.length),value]);
+      const settings=titleSettingsPayload(entries,PROFILE_FIELDS,undefined);
+      if(Object.keys(settings.overrides).length) titleSettings[titleId]={overrides:settings.overrides,inherit_fields:settings.inherit_fields};
+    }
+    const result=await api("/characters","POST",{...readEntity(form,e),title_ids:titleIds,title_settings:titleSettings});
+    const character=result.character;
+    delete localDrafts[key];draftsPersist();await refresh(false);
+    ui.selected=character.id;ui.characterSlots ||= {};ui.characterSlots[character.id]=titleIds[0] || "common";
+    render();toast("새 인물을 기록했습니다.");
+  },"인물 만들기",true);
+  const form=$("#dialog-form");
+  restoreProfileRaw(form,draft?.raw && Object.fromEntries(Object.entries(draft.raw).filter(([name])=>name!=="title_ids")));
+  const updateSlots=()=>{
+    const chosen=new FormData(form).getAll("title_ids");
+    if(currentSlot!=="common"&&!chosen.includes(currentSlot)) currentSlot="common";
+    for(const tab of $$("[data-new-character-slot]",form)) {
+      const id=tab.dataset.newCharacterSlot;tab.hidden=id!=="common"&&!chosen.includes(id);
+      tab.classList.toggle("active",id===currentSlot);tab.classList.toggle("ghost",id!==currentSlot);tab.setAttribute("aria-pressed",String(id===currentSlot));
+    }
+    for(const panel of $$("[data-new-character-panel]",form)) panel.hidden=panel.dataset.newCharacterPanel!==currentSlot;
+    updateProfileModes(form);
+  };
+  const snapshot=()=>{
+    try { localDrafts[key]={...readEntity(form,e),raw:profileRaw(form),title_ids:new FormData(form).getAll("title_ids"),active_slot:currentSlot}; }
+    catch { localDrafts[key]={...localDrafts[key],raw:profileRaw(form),title_ids:new FormData(form).getAll("title_ids"),active_slot:currentSlot}; }
+    draftsPersist();
+  };
+  for(const tab of $$("[data-new-character-slot]",form)) tab.onclick=()=>{currentSlot=tab.dataset.newCharacterSlot;updateSlots();snapshot();};
+  form.addEventListener("input",snapshot);
+  form.addEventListener("change",()=>{updateSlots();snapshot();});
+  updateSlots();
 }
 function relationEditor(id, existing) {
   const r = existing || { source_id: id, type: "related", data: {} };
@@ -1839,7 +1876,7 @@ document.addEventListener(
       render();
       return;
     }
-    if (action === "new-entity") return newEntity();
+    if (action === "new-entity") return newEntity(names[id] ? id : undefined);
     if (action === "new-event") return newEntity("event");
     if (action === "delete-entity") return deleteEntity(id);
     if (action === "new-relation") return relationEditor(id);
@@ -1993,7 +2030,27 @@ window.addEventListener("beforeunload", (ev) => {
   }
 });
 try {
-  await refresh();
+  await refresh(false);
+  const initialCatalog=catalogStatus(db);
+  let catalogWarning="";
+  if(initialCatalog.needsSetup && !initialCatalog.conflicts.length) {
+    try {
+      // Apply the owner's approved title catalog through the authenticated
+      // mutation endpoint, after the initial read-only state request succeeds.
+      await api("/catalog/reconcile","POST",{});
+      await refresh(false);
+    } catch(error) {
+      // Another tab may have completed the same idempotent registration.
+      // Refresh once; leave the current archive usable if setup remains blocked.
+      if(error.status===409) {
+        try { await refresh(false); } catch {}
+      }
+      const current=catalogStatus(db);
+      if(current.needsSetup || current.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 상단 등록 버튼으로 다시 확인할 수 있습니다. " + error.message;
+    }
+  }
+  render();
+  if(catalogWarning) { toast(catalogWarning,true);setStatus("세대·타이틀 등록 확인 필요"); }
 } catch (e) {
   $("#app").innerHTML =
     `<div class="empty"><h1>The Myth</h1><h2>아카이브에 연결할 수 없습니다.</h2><p>${h(e.message)}</p><button class="button primary" onclick="location.reload()">다시 연결</button><p>브라우저에 임시 보관된 편집 내용은 유지됩니다.</p></div>`;

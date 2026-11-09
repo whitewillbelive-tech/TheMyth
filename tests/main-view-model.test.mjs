@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PROFILE_FIELDS } from '../web/main-domain.js';
+import { CATALOG, catalogKey, PROFILE_FIELDS } from '../web/main-domain.js';
 import { mainSection, normalizeMainContext, contextForEntity, scopedEntities, withSpaceAncestors, detachedAppearances, hasAppearanceContent, captureFormFields, restoreFormFields, titleSettingsPayload, appearanceSelectionPayload, timelineParameters } from '../web/main-view-model.js';
 
 const state = {
@@ -169,6 +169,17 @@ test('application navigation keeps the shared title, expands background without 
   globalThis.document=doc;globalThis.window={addEventListener(){}};
   globalThis.localStorage={getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,String(v))};
   const fixture={...structuredClone(state),states:[],documents:[],chapters:[],versions:[],meta:{}};
+  // This navigation fixture represents a workspace whose approved catalog is
+  // already initialized. Reopening it must leave all data unchanged.
+  for (const spec of CATALOG) {
+    const generation=fixture.entities.find(e=>e.kind==='generation'&&e.data.number===spec.number);
+    generation.data.catalog_key=catalogKey(spec.number);
+    for (const [index,name] of spec.titles.entries()) {
+      let title=fixture.entities.find(e=>e.kind==='title'&&e.data.generation_id===generation.id&&e.name===name);
+      if(!title){title={id:`catalog-${spec.number}-${index}`,kind:'title',name,data:{generation_id:generation.id}};fixture.entities.push(title);}
+      title.data.catalog_key=catalogKey(spec.number,name);
+    }
+  }
   globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>String(path).startsWith('/api/timeline')?{events:[],titles:[],states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
   globalThis.__mainNavigationAtlas=(...args)=>{atlasCalls.push(args);return ()=>{};};
   try {

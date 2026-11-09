@@ -127,6 +127,49 @@ function hasSlotContent(appearance) {
   const data = appearance.data ?? {};
   return Object.keys(data.overrides ?? {}).length > 0 || [data.role, data.note].some(value => value !== undefined && value !== '') || !!appearance.start || !!appearance.end || Object.keys(data).some(key => !['overrides', 'inherit_fields', 'profile_schema', 'exclusive', 'role', 'note'].includes(key));
 }
+
+// Creation is one transaction: a global identity and its selected title slots
+// are either all stored or all rejected. Unknown optional details stay unknown.
+export function createCharacter(store, payload) {
+  if (!object(payload)) fail('인물 정보는 객체여야 합니다.');
+  if (payload.name != null && typeof payload.name !== 'string') fail('이름은 텍스트여야 합니다.');
+  if (payload.description != null && typeof payload.description !== 'string') fail('설명은 텍스트여야 합니다.');
+  if (payload.data != null && !object(payload.data)) fail('인물 설정은 객체여야 합니다.');
+  const data = structuredClone(payload.data ?? {});
+  // Older form readers represented empty optional text as null. Accept that
+  // representation at creation without making any world fact mandatory.
+  const optionalValues = values => Object.fromEntries(Object.entries(values).map(([key, value]) => {
+    const field = fields.get(key);
+    if (value !== null || !field) return [key, value];
+    return [key, ['aliases', 'id-list'].includes(field.type) ? [] : field.type === 'id' ? null : field.type === 'time' ? { mode: 'unknown' } : ''];
+  }));
+  Object.assign(data, optionalValues(data));
+  const titleIds = payload.title_ids ?? [];
+  if (!Array.isArray(titleIds) || titleIds.some(id => typeof id !== 'string' || !id) || new Set(titleIds).size !== titleIds.length) fail('등장 작품은 중복 없는 타이틀 ID 목록이어야 합니다.');
+  for (const titleId of titleIds) typedReference(store, titleId, ['title']);
+  const settings = payload.title_settings ?? {};
+  if (!object(settings)) fail('작품별 설정은 타이틀별 객체여야 합니다.');
+  const slots = new Map();
+  for (const [titleId, supplied] of Object.entries(settings)) {
+    if (!titleIds.includes(titleId)) fail('등장 작품으로 선택한 타이틀의 설정만 저장할 수 있습니다.');
+    if (!object(supplied)) fail('작품별 설정은 객체여야 합니다.');
+    if (supplied.overrides != null && !object(supplied.overrides)) fail('작품별 개별 설정은 객체여야 합니다.');
+    const overrides = optionalValues(supplied.overrides ?? {}), inherit = supplied.inherit_fields ?? [];
+    validateProfileFields(store, overrides, { rejectUnknown: true });
+    if (!Array.isArray(inherit) || inherit.some(key => !fields.has(key)) || new Set(inherit).size !== inherit.length) fail('공통 설정으로 사용할 항목이 잘못되었습니다.');
+    if (inherit.some(key => Object.hasOwn(overrides, key))) fail('한 항목을 개별 설정과 공통 상속으로 동시에 저장할 수 없습니다.');
+    slots.set(titleId, { overrides, inherit_fields: inherit });
+  }
+  const values = { kind: 'character', name: payload.name?.trim() || '이름 미정', description: payload.description ?? '', data };
+  if (payload.sort_order != null) values.sort_order = payload.sort_order;
+  const character = store.create('entities', values);
+  validateWorkspaceMutation(store, 'entities', character);
+  const appearances = titleIds.map(titleId => store.create('relations', {
+    source_id: character.id, target_id: titleId, type: 'appearance',
+    data: { profile_schema: 1, ...(slots.get(titleId) ?? { overrides: {}, inherit_fields: [] }) },
+  }));
+  return { character, appearances };
+}
 export function setCharacterAppearances(store, id, payload) {
   const character = characterRecord(store, id);
   assertRevision(character, payload.revision);
