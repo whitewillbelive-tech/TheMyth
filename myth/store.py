@@ -267,6 +267,8 @@ class Store:
             start, end = numeric(r.get("start")), numeric(r.get("end"), end=True)
             if start is not None and end is not None and start > end:
                 fail("관계·상태의 시작은 종료보다 늦을 수 없습니다.")
+        from .main_workspace import validate_main_record
+        validate_main_record(self, db, table, r)
 
     def create(self, db, table, values):
         r = {"id": values.get("id") or new_id(), "revision": 1, "created_at": now(), "updated_at": now(), "deleted_at": None}
@@ -291,6 +293,8 @@ class Store:
             if other_table != table and self.get(db, other_table, r["id"], False):
                 fail("다른 종류의 항목이 같은 ID를 사용합니다.", 409)
         self.validate(db, table, r)
+        from .main_workspace import validate_main_mutation
+        validate_main_mutation(self, db, table, r)
         self.put(db, table, r)
         return r
 
@@ -314,6 +318,8 @@ class Store:
             fail("고유 ID는 수정할 수 없습니다.")
         r = {**current, **{k: v for k, v in values.items() if k not in ("id", "revision", "created_at", "updated_at", "deleted_at")}}
         self.validate(db, table, r)
+        from .main_workspace import validate_main_mutation
+        validate_main_mutation(self, db, table, r, current)
         if r == current:
             return current
         self.version(db, table, current, label)
@@ -581,7 +587,7 @@ def active_at(record, year):
     return "effective" if (start is None or start <= year) and (end is None or year <= end) else "inactive"
 
 
-def timeline(state, year=None, title_id=None):
+def timeline(state, year=None, title_id=None, generation_id=None, include_common=True):
     entities = [e for e in state["entities"] if not e.get("deleted_at")]
     relations = [r for r in state["relations"] if not r.get("deleted_at")]
     states = [r for r in state["states"] if not r.get("deleted_at")]
@@ -589,19 +595,34 @@ def timeline(state, year=None, title_id=None):
     selected_title = by_id.get(title_id) if title_id else None
     if title_id and (not selected_title or selected_title["kind"] != "title"):
         fail("선택한 타이틀을 찾을 수 없습니다.", 404)
+    selected_generation = by_id.get(generation_id) if generation_id else None
+    if generation_id and (not selected_generation or selected_generation["kind"] != "generation"):
+        fail("선택한 세대를 찾을 수 없습니다.", 404)
+    if generation_id and selected_title and selected_title.get("data", {}).get("generation_id") != generation_id:
+        fail("선택한 세대와 타이틀이 일치하지 않습니다.")
     window = bounds(selected_title) if selected_title and year is None else (year, year)
-    related = {title_id} if title_id else set(by_id)
-    if title_id:
-        related.update(r["source_id"] if r["target_id"] == title_id else r["target_id"] for r in relations if title_id in (r["source_id"], r["target_id"]))
-    items = [e for e in entities if e["kind"] in ("event", "title") and (not title_id or e["id"] in related)]
+    from .main_workspace import matches_title_scope
+    def in_scope(record):
+        return matches_title_scope(state, record, generation_id, title_id, include_common)
+    if generation_id or title_id:
+        states = [record for record in states if in_scope(by_id.get(record.get("entity_id")))]
+        def relation_in_scope(record):
+            if record.get("data", {}).get("title_id") and not in_scope(record):
+                return False
+            title_endpoints = [record_id for record_id in (record.get("source_id"), record.get("target_id")) if by_id.get(record_id, {}).get("kind") == "title"]
+            if title_id and title_endpoints and title_id not in title_endpoints:
+                return False
+            return in_scope(by_id.get(record.get("source_id"))) and in_scope(by_id.get(record.get("target_id")))
+        relations = [record for record in relations if relation_in_scope(record)]
+    items = [e for e in entities if e["kind"] in ("event", "title") and in_scope(e)]
     items.sort(key=lambda e: (e.get("sort_order", 0), e.get("created_at", ""), e["id"]))
     # Stable topological order honors event precedence without assigning dates.
     item_ids = {i["id"] for i in items}
     edges = {i: set() for i in item_ids}
     for rel in relations:
-        if rel["type"] in ("before", "이전", "precedes"):
+        if rel["type"] in ("before", "이전", "precedes", "causes"):
             a, b = rel["source_id"], rel["target_id"]
-        elif rel["type"] in ("after", "이후", "follows"):
+        elif rel["type"] in ("after", "이후", "follows", "caused_by"):
             a, b = rel["target_id"], rel["source_id"]
         else:
             continue
@@ -676,13 +697,13 @@ def timeline(state, year=None, title_id=None):
             if aa is not None and ba is not None and max(aa, ba) <= min(az if az is not None else float("inf"), bz if bz is not None else float("inf")):
                 conflicts.append({"type": "governance_overlap", "message": "동일 공간의 통치·조율 관계가 중첩됩니다. 공동 관계이면 exclusive=false로 표시하세요.", "ids": [a["id"], b["id"]], "entity_id": a["target_id"]})
     for rel in relations:
-        if rel["type"] not in ("before", "after", "이전", "이후", "precedes", "follows"):
+        if rel["type"] not in ("before", "after", "이전", "이후", "precedes", "follows", "causes", "caused_by"):
             continue
         source, target = by_id.get(rel["source_id"]), by_id.get(rel["target_id"])
         if not source or not target:
             continue
         sa, sz = bounds(source)
         ta, tz = bounds(target)
-        if sa is not None and ta is not None and ((rel["type"] in ("before", "이전", "precedes") and sa > ta) or (rel["type"] in ("after", "이후", "follows") and sa < ta)):
+        if sa is not None and ta is not None and ((rel["type"] in ("before", "이전", "precedes", "causes") and sa > ta) or (rel["type"] in ("after", "이후", "follows", "caused_by") and sa < ta)):
             conflicts.append({"type": "date_order", "message": "확정 연도와 사건 선후 관계가 충돌합니다.", "ids": [rel["id"]]})
-    return {"year": year, "title_id": title_id, "observation_range": {"start": window[0], "end": window[1]}, "items": ordered, "events": [e for e in ordered if e["kind"] == "event"], "titles": [e for e in ordered if e["kind"] == "title"], "effective_states": effective_states, "effective_relations": effective_relations, "uncertain": uncertain, "conflicts": conflicts}
+    return {"year": year, "title_id": title_id, "generation_id": generation_id, "observation_range": {"start": window[0], "end": window[1]}, "items": ordered, "events": [e for e in ordered if e["kind"] == "event"], "titles": [e for e in ordered if e["kind"] == "title"], "effective_states": effective_states, "effective_relations": effective_relations, "uncertain": uncertain, "conflicts": conflicts}

@@ -1,4 +1,6 @@
 import { mountAtlas } from "/atlas-view.js";
+import { generations as catalogGenerations, titlesForGeneration, generationForTitle, appearancesFor, appearanceFor, commonProfile, resolveTitleProfile, PROFILE_FIELDS, titleIdsForEntity, eventRelationWarnings, profileTimelineWarnings, catalogStatus } from "/main-domain.js";
+import { normalizeMainContext, mainSection, contextForEntity, scopedEntities, withSpaceAncestors, detachedAppearances, hasAppearanceContent, scopedGroups, captureFormFields, restoreFormFields, titleSettingsPayload, appearanceSelectionPayload, timelineParameters } from "/main-view-model.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -32,6 +34,8 @@ const relNames = {
   related: "관련",
   before: "이전 사건",
   after: "이후 사건",
+  causes: "원인 → 결과",
+  caused_by: "결과 ← 원인",
   founder: "창시",
   inherits: "계승",
   develops: "발전",
@@ -44,16 +48,9 @@ const relNames = {
   author: "저술",
 };
 const mainNav = [
-  ["overview", "◈", "작업실"],
-  ["archive", "▤", "전체 아카이브"],
   ["character", "♙", "인물"],
-  ["organization", "⚑", "집단·문명"],
   ["event", "◇", "사건"],
-  ["spaces", "◎", "우주 공간"],
-  ["setting", "✧", "세계관 설정"],
-  ["timeline", "↝", "통합 연대기"],
-  ["groups", "▦", "그룹 관리"],
-  ["generations", "≡", "세대·타이틀"],
+  ["background", "◎", "배경"],
 ];
 const writeNav = [
   ["story", "✎", "외전 창작실"],
@@ -79,15 +76,21 @@ try {
 }
 let ui = {
   tab: "main",
-  view: "overview",
+  view: "character",
   query: "",
   kind: "",
   title: "",
   group: "",
   selected: null,
   chapter: null,
+  mainGeneration: "",
+  mainTitle: null,
+  includeCommon: true,
+  backgroundOpen: false,
+  characterSlots: {},
   ...prefs,
 };
+if (ui.tab === "main" && ui.view === "overview") ui.view = "character";
 let saveStatus = "모든 변경사항 저장됨";
 let disposeAtlas;
 let documentTimer,
@@ -259,9 +262,32 @@ function readTime(fd, p) {
     label: fd.get(p + "_label") || "",
   };
 }
+function mainContext() {
+  return { generationId: ui.mainGeneration, titleId: ui.mainTitle, includeCommon: ui.includeCommon };
+}
+function setMainContext(context) {
+  ui.mainGeneration = context.generationId;
+  ui.mainTitle = context.titleId;
+  ui.includeCommon = context.includeCommon !== false;
+}
+function mainNavigation() {
+  const section = mainSection(ui.view);
+  return mainNav.map(([view, icon, name]) => view === "background"
+    ? `<button type="button" data-action="toggle-background" aria-expanded="${!!ui.backgroundOpen}" aria-controls="background-navigation" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}<span class="nav-chevron">${ui.backgroundOpen ? "⌃" : "⌄"}</span></button><div id="background-navigation" class="background-navigation" ${ui.backgroundOpen ? "" : "hidden"}>${[["spaces","우주 공간"],["setting","세계관 설정"],["timeline","통합 연대기"]].map(([id,label])=>`<button type="button" data-action="view" data-id="${id}" class="${ui.view === id || id === "spaces" && ui.view === "atlas" ? "active" : ""}">${label}</button>`).join("")}</div>`
+    : `<button type="button" data-action="view" data-id="${view}" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}</button>`).join("");
+}
+function commonSelection() {
+  const gens = catalogGenerations(db), titles = titlesForGeneration(db, ui.mainGeneration), status = catalogStatus(db);
+  return `<section class="main-context" aria-label="본편 세대와 서브타이틀"><div class="main-context-top"><div class="generation-tabs" role="tablist" aria-label="세대">${gens.map(g=>`<button type="button" role="tab" aria-selected="${g.id === ui.mainGeneration}" data-action="select-generation" data-id="${g.id}"><strong>${h(g.data?.number || "")}세대</strong><span>${h(g.name)}</span></button>`).join("") || '<span class="muted">아직 등록된 세대가 없습니다.</span>'}</div>${button("세대·타이틀 관리", "view", "generations", "ghost small")}</div><div class="main-context-bottom"><label class="context-title"><span>서브타이틀</span><select id="main-title-select" aria-label="서브타이틀">${titles.length ? option("", "이 세대의 모든 타이틀", ui.mainTitle) + titles.map(t=>option(t.id,t.name,ui.mainTitle)).join("") : '<option value="">미정 · 확정된 타이틀 없음</option>'}</select></label>${["spaces","setting","timeline","atlas","organization","civilization","groups"].includes(ui.view) ? `<label class="context-common"><input id="main-common-toggle" type="checkbox" ${ui.includeCommon ? "checked" : ""}> 연결되지 않은 공통 자료도 보기</label>` : ""}<span class="context-note">선택은 본편 화면을 이동해도 유지됩니다.</span></div>${status.needsSetup ? `<div class="catalog-setup"><p>세대와 작품 목록을 준비할 수 있습니다. 기존 자료와 사용자 타이틀은 보존됩니다.</p>${button("초기 세대·타이틀 등록", "setup-catalog", "", "small primary")}</div>` : ""}${status.conflicts?.length ? `<p class="conflict">${status.conflicts.map(h).join("<br>")}</p>` : ""}</section>`;
+}
+function peopleNavigation() {
+  if (ui.tab !== "main" || !["character","organization","civilization","groups"].includes(ui.view)) return "";
+  const collective = ui.view !== "character";
+  return `<nav class="main-section-tabs" aria-label="인물 작업 영역">${button("인물 목록", "view", "character", !collective ? "active" : "ghost")}${button("집단·문명·그룹", "view", collective ? ui.view : "organization", collective ? "active" : "ghost")}</nav>${collective ? `<nav class="collective-tabs" aria-label="집단·문명·그룹 유형">${[["organization","집단"],["civilization","문명"],["groups","그룹"]].map(([id,name])=>button(name,"view",id,ui.view===id?"active":"ghost")).join("")}</nav>` : ""}`;
+}
 function shell() {
-  const nav = ui.tab === "main" ? mainNav : writeNav;
-  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>THE MYTH</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav">${nav.map(([v, i, n]) => `<button type="button" data-action="view" data-id="${v}" class="${ui.view === v ? "active" : ""}"><span class="nav-icon">${i}</span>${n}${["character", "event", "setting", "thought", "thinker"].includes(v) ? `<span class="nav-count">${active("entities").filter((x) => x.kind === v).length}</span>` : ""}</button>`).join("")}</nav><div class="side-footer"><span class="side-caption">WORKSPACE</span><button data-action="view" data-id="trash">♲ 휴지통 <span>${db.entities.filter((x) => x.deleted_at).length + db.documents.filter((x) => x.deleted_at).length}</span></button><button data-action="backup">↗ 백업 및 복원</button><p>하나의 우주, 이어지는 이야기.<br><span>당신의 세계를 기록하는 곳</span></p></div></aside><main class="workspace"><header class="topbar"><nav class="top-tabs" aria-label="프로젝트 영역"><button data-action="tab" data-id="main" class="${ui.tab === "main" ? "active" : ""}">본편</button><button data-action="tab" data-id="writing" class="${ui.tab === "writing" ? "active" : ""}">외전+사상집</button></nav><div class="header-tools"><label class="global-search"><span>⌕</span><input id="global-search" aria-label="통합 검색" placeholder="세계관 전체에서 검색" value="${h(ui.query)}"><kbd>↵</kbd></label><span class="save-state">${h(saveStatus)}</span><button class="mobile-backup button ghost small" data-action="backup" aria-label="백업 및 복원">↗</button></div></header><div id="page" class="content"></div><footer class="workspace-footer"><span>THE MYTH · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
+  const nav = ui.tab === "main" ? mainNavigation() : writeNav.map(([v,i,n])=>`<button type="button" data-action="view" data-id="${v}" class="${ui.view===v?"active":""}"><span class="nav-icon">${i}</span>${n}</button>`).join("");
+  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>The Myth</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav" aria-label="${ui.tab === "main" ? "본편 주메뉴" : "외전과 사상집 메뉴"}">${nav}</nav><div class="side-footer"><span class="side-caption">WORKSPACE</span><button data-action="view" data-id="trash">♲ 휴지통 <span>${db.entities.filter((x) => x.deleted_at).length + db.documents.filter((x) => x.deleted_at).length}</span></button><button data-action="backup">↗ 백업 및 복원</button><p>하나의 우주, 이어지는 이야기.<br><span>당신의 세계를 기록하는 곳</span></p></div></aside><main class="workspace"><header class="topbar"><nav class="top-tabs" aria-label="프로젝트 영역"><button data-action="tab" data-id="main" class="${ui.tab === "main" ? "active" : ""}">본편</button><button data-action="tab" data-id="writing" class="${ui.tab === "writing" ? "active" : ""}">외전+사상집</button></nav><div class="header-tools"><label class="global-search"><span>⌕</span><input id="global-search" aria-label="통합 검색" placeholder="세계관 전체에서 검색" value="${h(ui.query)}"><kbd>↵</kbd></label><span class="save-state">${h(saveStatus)}</span><button class="mobile-backup button ghost small" data-action="backup" aria-label="백업 및 복원">↗</button></div></header>${ui.tab === "main" ? commonSelection() : ""}<div id="page" class="content"></div><footer class="workspace-footer"><span>The Myth · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
 }
 function header(eyebrow, title, subtitle, actions = "") {
   return `<div class="page-header"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="subtitle">${subtitle}</p></div><div class="actions">${actions}</div></div>`;
@@ -285,7 +311,7 @@ function overview() {
       "흩어진 설정을 연결하고, 아직 쓰이지 않은 이야기를 이어가세요.",
       button("+ 새 자료 만들기", "new-entity", "", "primary"),
     ) +
-    `<div class="banner"><div><span class="banner-kicker">THE MYTH / CREATOR’S WORKSPACE</span><h2>세계를 쌓고, 이야기를 쓰다.</h2><p>인물의 한 생애부터 우주의 긴 역사까지.<br>모든 작품이 하나의 아카이브에서 만납니다.</p><button class="text-link" data-action="view" data-id="archive">전체 아카이브 열기 <span>↗</span></button></div><div class="orbital" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><span class="orbit-core">M</span><span class="orbit-dot"></span><span class="orbit-caption">ONE UNIVERSE<br>INFINITE STORIES</span></div></div><div class="stats-row">${[
+    `<div class="banner"><div><span class="banner-kicker">The Myth / CREATOR’S WORKSPACE</span><h2>세계를 쌓고, 이야기를 쓰다.</h2><p>인물의 한 생애부터 우주의 긴 역사까지.<br>모든 작품이 하나의 아카이브에서 만납니다.</p><button class="text-link" data-action="view" data-id="archive">전체 아카이브 열기 <span>↗</span></button></div><div class="orbital" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><span class="orbit-core">M</span><span class="orbit-dot"></span><span class="orbit-caption">ONE UNIVERSE<br>INFINITE STORIES</span></div></div><div class="stats-row">${[
       [
         "세계관 자료",
         active("entities").filter(
@@ -355,10 +381,8 @@ function entityList() {
   let list = active("entities");
   if (ui.view === "character")
     list = list.filter((x) => x.kind === "character");
-  else if (ui.view === "organization")
-    list = list.filter((x) =>
-      ["organization", "civilization"].includes(x.kind),
-    );
+  else if (["organization","civilization"].includes(ui.view))
+    list = list.filter((x) => x.kind === ui.view);
   else if (ui.view === "spaces")
     list = list.filter((x) => ["space", "planet"].includes(x.kind));
   else if (ui.view === "generations")
@@ -366,7 +390,7 @@ function entityList() {
   else if (["event", "setting", "thought", "thinker"].includes(ui.view))
     list = list.filter((x) => x.kind === ui.view);
   if (ui.kind) list = list.filter((x) => x.kind === ui.kind);
-  if (ui.title) {
+  if (ui.tab !== "main" && ui.title) {
     const ids = new Set(
       active("relations")
         .filter((r) => r.source_id === ui.title || r.target_id === ui.title)
@@ -382,12 +406,17 @@ function entityList() {
     );
     list = list.filter((x) => ids.has(x.id));
   }
+  if (ui.tab === "main" && ui.view !== "generations") {
+    list = scopedEntities(db,list,mainContext(),{includeCommon:["character","event"].includes(ui.view) ? !ui.mainTitle && ui.includeCommon : ui.includeCommon});
+    if (ui.view === "spaces") list = withSpaceAncestors(active("entities").filter(e=>["space","planet"].includes(e.kind)),list);
+  }
   return sorted(list.filter(matches));
 }
 const viewTitle = {
   archive: "전체 아카이브",
   character: "인물",
-  organization: "집단과 문명",
+  organization: "집단",
+  civilization: "문명",
   event: "사건",
   spaces: "우주 공간",
   setting: "세계관 설정",
@@ -396,32 +425,9 @@ const viewTitle = {
   thinker: "사상가",
 };
 function archive() {
-  const list = entityList(),
-    selected = db.entities.find((x) => x.id === ui.selected && !x.deleted_at);
-  return (
-    header(
-      ui.tab === "main" ? "WORLD ARCHIVE" : "PHILOSOPHY ARCHIVE",
-      viewTitle[ui.view] || "아카이브",
-      ui.view === "spaces"
-        ? "좌표가 없어도 연결되는 우주. 물리적 공간과 시대별 통치 관계를 따로 기록합니다."
-        : ui.view === "thought"
-          ? "인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다."
-          : "하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",
-      (ui.view === "spaces" ? button("3D 지도", "view", "atlas", "ghost") : "") +
-        button("+ 새 자료", "new-entity", "", "primary"),
-    ) +
-    `${ui.query ? searchDocuments() : ""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("", "모든 유형", ui.kind)}${Object.entries(
-      names,
-    )
-      .map(([k, n]) => option(k, n, ui.kind))
-      .join(
-        "",
-      )}</select><select id="title-filter" aria-label="타이틀 필터">${options(
-      active("entities").filter((e) => e.kind === "title"),
-      ui.title,
-      "전체 타이틀",
-    )}</select><select id="group-filter" aria-label="그룹 필터">${options(active("groups"), ui.group, "전체 그룹")}</select>${ui.query || ui.kind || ui.title || ui.group ? button("필터 초기화", "clear-filter", "", "ghost small") : ""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view === "spaces" ? "공간 계층" : "자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view === "spaces" && !ui.query && !ui.kind && !ui.title && !ui.group ? spaceTree(list) : list.map((e) => listRow(e)).join("") || empty("자료가 없습니다", "새 자료를 만들거나 필터를 바꿔보세요.")}</div></section><section class="detail-panel">${selected ? entityDetail(selected) : empty("기록을 선택하세요", "왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.", button("+ 첫 자료 추가", "new-entity", "", "primary"))}</section></div>`
-  );
+  const list = entityList(), selected = db.entities.find(x=>x.id===ui.selected&&!x.deleted_at);
+  const titleFilter = ui.tab === "main" ? "" : `<select id="title-filter" aria-label="타이틀 필터">${options(active("entities").filter(e=>e.kind==="title"),ui.title,"전체 타이틀")}</select>`;
+  return header(ui.tab==="main"?"WORLD ARCHIVE":"PHILOSOPHY ARCHIVE",viewTitle[ui.view]||"아카이브",ui.view==="spaces"?"공통 우주의 원본 계층을 유지하며 관련 공간을 탐색합니다.":ui.view==="thought"?"인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다.":ui.view==="generations"?"기존 ID를 유지하며 세대와 작품을 추가·편집·정렬합니다.":"하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",(ui.view==="spaces"?button("3D 지도","view","atlas","ghost"):"")+button(ui.view==="generations"?"+ 타이틀":"+ 새 자료","new-entity","","primary")+(ui.view==="generations"?button("+ 세대","new-generation","","ghost"):"")) + `${ui.query?searchDocuments():""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("","모든 유형",ui.kind)}${Object.entries(names).map(([k,n])=>option(k,n,ui.kind)).join("")}</select>${titleFilter}<select id="group-filter" aria-label="그룹 필터">${options(active("groups"),ui.group,"전체 그룹")}</select>${ui.query||ui.kind||ui.group||ui.tab!=="main"&&ui.title?button("필터 초기화","clear-filter","","ghost small"):""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view==="spaces"?"공간 계층":"자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view==="spaces"&&!ui.query&&!ui.kind&&!ui.group?spaceTree(list):list.map(e=>listRow(e)).join("")||empty("자료가 없습니다","새 자료를 만들거나 선택한 세대와 타이틀을 바꿔보세요.")}</div></section><section class="detail-panel">${selected?entityDetail(selected):empty("기록을 선택하세요","왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.",button("+ 첫 자료 추가","new-entity","","primary"))}</section></div>`;
 }
 function listRow(e, depth = 0) {
   return `<button class="list-row ${ui.selected === e.id ? "selected" : ""}" data-action="select" data-id="${e.id}" style="padding-left:${20 + depth * 16}px"><span class="list-name">${h(e.name)}</span><span class="list-meta">${names[e.kind] || e.kind} ${e.data?.subtype ? "· " + h(e.data.subtype) : ""}${e.data?.status ? " · " + h(e.data.status) : ""}</span></button>`;
@@ -447,10 +453,94 @@ function spaceTree(list, parent = null, depth = 0, seen = new Set()) {
       : "")
   );
 }
+function recordManagement(e) {
+  return `<details class="record-tools"><summary>고급 관리</summary><div class="actions">${button("↑ 순서", "reorder-up", e.id, "small ghost")}${button("↓ 순서", "reorder-down", e.id, "small ghost")}${button("분할", "split", e.id, "small ghost")}${button("병합", "merge", e.id, "small ghost")}${button("삭제", "delete-entity", e.id, "small danger")}</div></details>`;
+}
 function entityDetail(e) {
+  if (e.kind === "character" && ui.tab === "main") return characterDetail(e);
+  return baseEntityDetail(e) + (e.kind === "event" ? eventConnections(e) : "");
+}
+function profileOptions(fieldInfo, selected, multiple = false) {
+  const selectedIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
+  const kinds = fieldInfo.kinds || (fieldInfo.key === "organization_ids" ? ["organization","civilization"] : fieldInfo.key === "activity_planet_id" ? ["planet"] : ["space","planet"]);
+  return (multiple ? "" : option("", "미정", selected)) + sorted(db.entities.filter(e=>kinds.includes(e.kind) && (!e.deleted_at || selectedIds.includes(e.id)))).map(e=>`<option value="${h(e.id)}" ${selectedIds.includes(e.id)?"selected":""}>${h(e.name)}${e.deleted_at?" (보관된 자료)":""}</option>`).join("");
+}
+function profileControl(info, value, name, disabled = false) {
+  const flag = disabled ? "disabled" : "";
+  if (info.type === "time") return `<fieldset class="profile-time" ${flag}>${timeFields(name, value)}</fieldset>`;
+  if (info.type === "id" || info.type === "id-list") return `<select name="${name}" ${info.type === "id-list" ? 'multiple size="4"' : ""} ${flag}>${profileOptions(info,value,info.type === "id-list")}</select>`;
+  if (info.type === "textarea") return `<textarea name="${name}" rows="3" ${flag}>${h(value ?? "")}</textarea>`;
+  return input(name, Array.isArray(value) ? value.join(", ") : value ?? "", "", flag);
+}
+function commonCharacterFields(e) {
+  const values = commonProfile(e);
+  return PROFILE_FIELDS.filter(f=>!["name","aliases","description"].includes(f.key)).map(info=>field(info.label, profileControl(info, values[info.key], info.type === "time" ? "time" : "data_" + info.key), info.type === "textarea" || info.type === "time")).join("");
+}
+function titleDraftKey(characterId, titleId) { return "title-settings:" + characterId + ":" + titleId; }
+function archivedAppearanceView(character,relation) {
+  const titleId=relation.source_id===character.id?relation.target_id:relation.source_id,profile=resolveTitleProfile(character,relation);
+  const fields=PROFILE_FIELDS.filter(f=>profile.sources[f.key]!=='common');
+  return `<details><summary>${h(label(titleId))} · ${hasAppearanceContent(relation)?'작품별 내용 보관됨':'연결 이력 보관됨'}</summary>${fields.length?`<dl>${fields.map(f=>`<dt>${h(f.label)}</dt><dd>${h(profileDisplay(profile.values[f.key]))}</dd>`).join('')}</dl>`:'<p class="muted">모든 항목이 공통 설정을 사용합니다.</p>'}${relation.start||relation.end?`<p>기존 등장 시점: ${h(timeLabel(relation.start))}${relation.end?' ~ '+h(timeLabel(relation.end)):''}</p>`:''}</details>`;
+}
+function characterDetail(e) {
+  const all = appearancesFor(db,e.id), activeTitles = [...new Set(all.map(r=>r.source_id === e.id ? r.target_id : r.source_id))].map(lookup).filter(t=>t?.kind === "title" && !t.deleted_at);
+  ui.characterSlots ||= {};
+  let selected = ui.characterSlots[e.id] || "common";
+  if (selected !== "common" && !activeTitles.some(t=>t.id===selected)) selected = "common";
+  ui.characterSlots[e.id] = selected;
+  const checkDraft = localDrafts["appearance-checks:" + e.id];
+  const checked = checkDraft?.title_ids || activeTitles.map(t=>t.id);
+  const archived = appearancesFor(db,e.id,{includeArchived:true}).filter(r=>r.deleted_at);
+  const duplicate = activeTitles.filter(t=>all.filter(r=>r.source_id===t.id||r.target_id===t.id).length>1);
+  const fields = catalogGenerations(db).map(g=>`<fieldset><legend>${h(g.data?.number||"")}세대 · ${h(g.name)}</legend>${titlesForGeneration(db,g.id).map(t=>`<label class="appearance-choice"><input type="checkbox" name="title_ids" value="${t.id}" ${checked.includes(t.id)?"checked":""}><span>${h(t.name)}</span></label>`).join("") || '<p class="muted">확정된 타이틀이 생기면 선택할 수 있습니다.</p>'}</fieldset>`).join("");
+  const draft = localDrafts["entity:"+e.id];
+  const x = draft ? {...e,...draft,data:{...e.data,...draft.data}} : e;
+  const relation = selected === "common" ? null : appearanceFor(db,e.id,selected);
+  const editor = selected === "common"
+    ? `<form id="entity-form" data-id="${e.id}"><div class="profile-heading"><h3>공통 설정</h3><p>모든 작품에서 함께 사용하는 인물의 기본 정체성입니다. 출신 행성과 기존 연결은 유지됩니다.</p></div><div class="form-grid">${entityFields(x)}</div><div class="form-actions"><span class="draft-notice muted">${draft?"브라우저에 보관된 미저장 변경사항이 있습니다.":"공통값을 상속하는 작품에도 반영됩니다."}</span><button class="button primary" type="submit">변경사항 저장</button></div>${draftRecovery("entity:"+e.id)}</form>`
+    : relation ? titleSettingsForm(e,lookup(selected),relation) : '<p class="conflict">등장 연결이 중복되어 작품별 값을 결정할 수 없습니다. 아래 연결된 자료에서 기존 연결을 먼저 확인하세요.</p>';
+  return `<div class="detail-header"><div><span class="eyebrow">인물 / GLOBAL RECORD</span><h2>${h(e.name)}</h2><small class="muted">${h(e.id)}</small></div>${recordManagement(e)}</div><section class="appearance-section"><div class="section-title"><h3>등장 작품</h3><span class="muted">여러 작품에서 같은 인물을 연결합니다.</span></div><form id="appearance-form" data-id="${e.id}"><div class="appearance-grid">${fields}</div>${duplicate.length?`<p class="conflict">중복 등장 연결 확인 필요: ${duplicate.map(t=>h(t.name)).join(", ")}</p>`:""}<div class="form-actions"><small class="muted">체크를 해제해도 인물과 작품별 기록은 보관됩니다.</small><div class="actions">${button("저장된 연결 다시 불러오기","discard-appearance-draft",e.id,"ghost small")}${button("최신 연결과 비교해 다시 저장","rebase-appearance-draft",e.id,"ghost small")}<button type="submit" class="button small primary">등장 작품 저장</button></div></div></form>${archived.length?`<details class="archived-slots"><summary>연결 해제된 작품 기록 ${archived.length}개</summary><p class="muted">작품을 다시 체크하면 기존 연결과 설정을 복구합니다.</p>${archived.map(r=>archivedAppearanceView(e,r)).join("")}</details>`:""}</section><nav class="character-slot-tabs" aria-label="인물 정보 슬롯">${button("공통 설정","character-slot",e.id+"|common",selected==="common"?"active":"ghost")}${sorted(activeTitles).map(t=>button(h(t.name),"character-slot",e.id+"|"+t.id,selected===t.id?"active":"ghost")).join("")}</nav>${editor}<div class="detail-sections">${referenceSection(e.id)}${entityTimeline(e)}${membershipSection(e)}${historySection("entities",e.id)}</div>`;
+}
+function profileDisplay(value) {
+  if (value == null || value === "" || Array.isArray(value) && !value.length) return "미정";
+  if (Array.isArray(value)) return value.map(v=>lookup(v)?label(v):v).join(", ");
+  if (typeof value === "object") return timeLabel(value);
+  return lookup(value) ? label(value) : String(value);
+}
+function titleSettingsForm(character,title,relation) {
+  const resolved = resolveTitleProfile(character,relation), common = commonProfile(character), key=titleDraftKey(character.id,title.id), draft=localDrafts[key];
+  resolved.warnings = profileTimelineWarnings(db,character,relation);
+  return `<form id="title-settings-form" data-character="${character.id}" data-title="${title.id}" data-relation="${relation.id}"><div class="profile-heading"><h3>${h(title.name)} · 작품별 설정</h3><p>공통 설정을 기본으로 사용하고, 이 작품에서 달라지는 항목만 개별 설정으로 기록합니다.</p></div>${resolved.warnings?.length?`<div class="conflict">${resolved.warnings.map(h).join("<br>")}</div>`:""}<div class="title-profile-grid">${PROFILE_FIELDS.map(info=>{
+    const mode = draft?.raw?.["mode_"+info.key] || (resolved.sources[info.key] === "common" ? "common" : "custom");
+    const value = resolved.values[info.key];
+    return `<section class="title-profile-field" data-profile-key="${info.key}"><div class="profile-field-heading"><label for="profile-mode-${info.key}">${h(info.label)}</label><span class="profile-source">${mode==="common"?"공통 설정 상속":resolved.sources[info.key]==="legacy"?"기존 작품 기록":"타이틀별 개별 설정"}</span></div><select id="profile-mode-${info.key}" name="mode_${info.key}" data-profile-mode="${info.key}" aria-label="${h(info.label)} 설정 방식">${option("common","공통 설정 사용",mode)}${option("custom","타이틀별 개별 설정",mode)}</select><div class="profile-value">${profileControl(info,value,"profile_"+info.key,mode==="common")}</div><p class="profile-common-preview">공통값: ${h(profileDisplay(common[info.key]))}</p></section>`;
+  }).join("")}</div><div class="form-actions"><span class="muted">${draft?"이 작품 슬롯의 미저장 초안을 복구했습니다.":"다른 작품이나 공통 설정은 변경하지 않습니다."}</span><button type="submit" class="button primary">작품별 설정 저장</button></div><div class="slot-draft-actions actions">${button("이 슬롯의 서버 내용 사용","discard-title-draft",key,"small ghost")}${button("최신 설정과 비교해 내 초안 저장","rebase-title-draft",key,"small ghost")}</div></form>`;
+}
+function eventConnectionRow(relation,event) {
+  const source=relation.source_id===event.id,otherId=source?relation.target_id:relation.source_id;
+  const description = relation.type==='before' ? source?'이 사건이 먼저 발생':'연결된 사건이 먼저 발생' : relation.type==='after' ? source?'연결된 사건 이후에 이 사건 발생':'이 사건 이후에 연결된 사건 발생' : relation.type==='causes' ? source?'이 사건이 원인 → 연결된 사건이 결과':'연결된 사건이 원인 → 이 사건이 결과' : relation.type==='caused_by' ? source?'연결된 사건이 원인 → 이 사건이 결과':'이 사건이 원인 → 연결된 사건이 결과' : '관련 사건';
+  const other=lookup(otherId),titleId=other?.data?.title_id||(other?titleIdsForEntity(db,other)[0]:null);
+  return `<div class="relation-row"><div><span class="muted">${h(description)}</span><button class="text-link" data-action="open" data-id="${otherId}">${h(label(otherId))} ↗</button><small>${h(label(titleId))} · ${h(relation.data?.note||'')}</small></div><div class="actions">${button('수정','edit-relation',relation.id,'ghost small')}${button('연결 해제','delete-relation',relation.id,'ghost small')}</div></div>`;
+}
+function eventConnections(e) {
+  const relations=active("relations").filter(r=>(r.source_id===e.id||r.target_id===e.id)&&lookup(r.source_id)?.kind==="event"&&lookup(r.target_id)?.kind==="event");
+  return `<section class="event-connections"><div class="section-title"><h3>연관 사건</h3>${button("+ 사건 연결","new-event-relation",e.id,"small ghost")}</div><p class="muted">같은 세대의 다른 타이틀 사건도 연결할 수 있습니다. 화살표는 저장된 방향을 나타냅니다.</p>${relations.map(r=>`${eventConnectionRow(r,e)}${eventRelationWarnings(db,r).map(w=>`<p class="conflict">${h(w)}</p>`).join("")}`).join("") || '<p class="muted">연결된 사건이 없습니다.</p>'}</section>`;
+}
+function eventRelationEditor(eventId) {
+  const source=lookup(eventId), linked=titleIdsForEntity(db,source), sourceTitle=source.data?.title_id || (linked.length===1?linked[0]:null), gen=generationForTitle(db,sourceTitle);
+  const targets=active("entities").filter(e=>e.kind==="event"&&e.id!==eventId).filter(e=>!gen||generationForTitle(db,e.data?.title_id||titleIdsForEntity(db,e)[0])?.id===gen.id);
+  openDialog("연관 사건 연결",`<p class="callout">${h(source.name)}에서 대상 사건으로 향하는 관계를 기록합니다. 미확정 시점을 임의의 연도로 바꾸지 않습니다.</p><div class="form-grid">${field("대상 사건",`<select name="target_id" required>${option("","사건 선택","")}${targets.map(e=>option(e.id,`${e.name} · ${label(e.data?.title_id||titleIdsForEntity(db,e)[0])}`,"")).join("")}</select>`)}${field("이 사건과 대상 사건의 관계",`<select name="type">${[["related","관련 사건"],["before","이 사건이 대상 사건보다 먼저"],["after","이 사건이 대상 사건보다 나중"],["causes","이 사건이 원인 → 대상 사건이 결과"],["caused_by","이 사건이 결과 ← 대상 사건이 원인"]].map(([v,n])=>option(v,n,"related")).join("")}</select>`)}${field("관계 설명",textarea("note",""),true)}</div>`,async fd=>{
+    const body={source_id:eventId,target_id:fd.get("target_id"),type:fd.get("type"),data:{note:fd.get("note")},start:{mode:"unknown"},end:null};
+    const warnings=eventRelationWarnings(db,body);
+    if(warnings.length&&!confirm(warnings.join("\n")+"\n시간 기록은 덮어쓰지 않고 관계를 저장하시겠습니까?"))return;
+    await mutate("/relations","POST",body,"사건을 연결했습니다.");
+  },"사건 연결");
+}
+
+function baseEntityDetail(e) {
   const draft = localDrafts["entity:" + e.id];
   const x = draft ? { ...e, ...draft, data: { ...e.data, ...draft.data } } : e;
-  return `<div class="detail-header"><div><span class="eyebrow">${names[e.kind] || h(e.kind)} / GLOBAL RECORD</span><h2>${h(e.name)}</h2><small class="muted">${h(e.id)}</small></div><div class="actions">${button("↑", "reorder-up", e.id, "small ghost")}${button("↓", "reorder-down", e.id, "small ghost")}${button("분할", "split", e.id, "small ghost")}${button("병합", "merge", e.id, "small ghost")}${button("삭제", "delete-entity", e.id, "small danger")}</div></div><form id="entity-form" data-id="${e.id}"><div class="form-grid">${entityFields(x)}</div><div class="form-actions"><span class="draft-notice muted">${draft ? "브라우저에 보관된 미저장 변경사항이 있습니다." : "고유 ID로 연결되어 이름을 바꾸어도 참조가 유지됩니다."}</span><button class="button primary" type="submit">변경사항 저장</button></div>${draftRecovery("entity:" + e.id)}</form><div class="detail-sections">${referenceSection(e.id)}${entityTimeline(e)}${membershipSection(e)}${historySection("entities", e.id)}</div>`;
+  return `<div class="detail-header"><div><span class="eyebrow">${names[e.kind] || h(e.kind)} / GLOBAL RECORD</span><h2>${h(e.name)}</h2><small class="muted">${h(e.id)}</small></div>${ui.tab === "main" ? recordManagement(e) : `<div class="actions">${button("↑", "reorder-up", e.id, "small ghost")}${button("↓", "reorder-down", e.id, "small ghost")}${button("분할", "split", e.id, "small ghost")}${button("병합", "merge", e.id, "small ghost")}${button("삭제", "delete-entity", e.id, "small danger")}</div>`}</div><form id="entity-form" data-id="${e.id}"><div class="form-grid">${entityFields(x)}</div><div class="form-actions"><span class="draft-notice muted">${draft ? "브라우저에 보관된 미저장 변경사항이 있습니다." : "고유 ID로 연결되어 이름을 바꾸어도 참조가 유지됩니다."}</span><button class="button primary" type="submit">변경사항 저장</button></div>${draftRecovery("entity:" + e.id)}</form><div class="detail-sections">${referenceSection(e.id)}${entityTimeline(e)}${membershipSection(e)}${historySection("entities", e.id)}</div>`;
 }
 function entityFields(e) {
   const d = e.data || {};
@@ -492,6 +582,7 @@ function entityFields(e) {
         "미정",
       )}</select>`,
     );
+  if (["title","generation"].includes(e.kind)) html += field("표시 순서",input("sort_order",e.sort_order ?? (e.kind === "title" ? titlesForGeneration(db,d.generation_id || ui.mainGeneration).length : 0),"",'type="number"'));
   if (e.kind === "character")
     html +=
       field(
@@ -519,6 +610,13 @@ function entityFields(e) {
         )}</select>`,
       ) +
       field("종족", input("data_species", d.species, "미정"));
+  if (e.kind === "character") html += commonCharacterFields(e);
+  if (e.kind === "event") {
+    const linkedTitles = e.id ? titleIdsForEntity(db,e) : [];
+    const eventTitle = d.title_id || (e.id ? linkedTitles.length === 1 ? linkedTitles[0] : "" : ui.mainTitle) || "";
+    const generation = generationForTitle(db,eventTitle) || lookup(d.generation_id);
+    html += field("소속 타이틀", `<select name="data_title_id" ${e.id ? "" : "required"}>${options(active("entities").filter(x=>x.kind==="title"),eventTitle,"타이틀 선택")}</select>`) + field("소속 세대", input("event_generation_display",generation?.name||"타이틀을 선택하면 정해집니다.","","readonly")) + field("사건 결과",textarea("data_result",d.result),true) + '<p class="wide muted">관련 인물·집단·발생 장소는 아래 연결된 자료에서 원본 객체와 연결하세요.</p>';
+  }
   if (["space", "planet"].includes(e.kind))
     html +=
       field(
@@ -612,6 +710,11 @@ function entityFields(e) {
     "category",
     "number",
     "time",
+    "title_id",
+    "result",
+    "catalog_key",
+    "appearance_revision",
+    ...(e.kind === "character" ? PROFILE_FIELDS.map(f=>f.key) : []),
   ];
   const custom = Object.fromEntries(
     Object.entries(d).filter(([k]) => !known.includes(k)),
@@ -633,6 +736,9 @@ function readEntity(form, e = {}) {
       .map((s) => s.trim())
       .filter(Boolean);
   if (fd.has("time_mode")) data.time = readTime(fd, "time");
+  if (form.elements.namedItem("data_organization_ids")) data.organization_ids = fd.getAll("data_organization_ids");
+  if (fd.has("data_title_id") && data.title_id) data.generation_id = generationForTitle(db,data.title_id)?.id || null;
+  else if (fd.has("data_title_id") && e.data?.title_id) data.generation_id = null;
   let custom = JSON.parse(fd.get("custom_data") || "{}");
   if (!custom || Array.isArray(custom) || typeof custom !== "object")
     throw new Error("사용자 정의 정보는 JSON 객체여야 합니다.");
@@ -642,6 +748,7 @@ function readEntity(form, e = {}) {
     kind: fd.get("kind") || e.kind,
     description: fd.get("description") || "",
     data,
+    ...(fd.has("sort_order") ? {sort_order:Number(fd.get("sort_order") || 0)} : {}),
   };
 }
 function referenceSection(id) {
@@ -659,7 +766,10 @@ function referenceSection(id) {
 }
 function relationRow(r, id) {
   const other = r.source_id === id ? r.target_id : r.source_id;
-  return `<div class="relation-row"><div><span class="muted">${r.source_id === id ? "→" : "←"} ${h(relNames[r.type] || r.type)}</span> <button class="text-link" data-action="open" data-id="${other}">${h(label(other))}${lookup(other)?.deleted_at ? " (휴지통)" : ""}</button><small>${h(r.data?.role || r.data?.note || "")} · ${h(timeLabel(r.start))}${r.end ? " ~ " + h(timeLabel(r.end)) : ""}</small></div><div class="actions">${button("수정", "edit-relation", r.id, "ghost small")}${button("연결 해제", "delete-relation", r.id, "ghost small")}</div></div>`;
+  const character = lookup(r.source_id)?.kind === 'character' ? lookup(r.source_id) : lookup(r.target_id)?.kind === 'character' ? lookup(r.target_id) : null;
+  const titleId = character && (r.source_id === character.id ? r.target_id : r.source_id);
+  const slot = r.type === 'appearance' && character && lookup(titleId)?.kind === 'title';
+  return `<div class="relation-row"><div><span class="muted">${r.source_id === id ? "→" : "←"} ${h(relNames[r.type] || r.type)}</span> <button class="text-link" data-action="open" data-id="${other}">${h(label(other))}${lookup(other)?.deleted_at ? " (휴지통)" : ""}</button><small>${h(r.data?.role || r.data?.note || "")} · ${h(timeLabel(r.start))}${r.end ? " ~ " + h(timeLabel(r.end)) : ""}</small></div><div class="actions">${slot?button("작품별 설정","open-title-slot",character.id+'|'+titleId,"ghost small"):""}${button(slot?"관계·시점":"수정", "edit-relation", r.id, "ghost small")}${button("연결 해제", "delete-relation", r.id, "ghost small")}</div></div>`;
 }
 function entityTimeline(e) {
   const states = active("states")
@@ -690,7 +800,7 @@ function historySection(type, id) {
   }</details>`;
 }
 function groupsView() {
-  const list = sorted(active("groups"));
+  const list = sorted(ui.tab === "main" ? scopedGroups(db,active("groups"),mainContext()) : active("groups"));
   return (
     header(
       "COLLECTIONS",
@@ -701,10 +811,9 @@ function groupsView() {
     `<div class="overview-grid">${
       list
         .map((g) => {
-          const members = active("memberships").filter(
-            (m) => m.group_id === g.id,
-          );
-          return `<section class="panel"><div class="panel-header"><div><span class="eyebrow">${g.parent_id ? h(label(g.parent_id)) + " / " : ""}COLLECTION</span><h2>${h(g.name)}</h2><p class="muted">${h(g.description || "설명 없음")}</p></div><div class="actions">${button("수정", "edit-group", g.id, "ghost small")}${button("삭제", "delete-group", g.id, "danger small")}</div></div><div class="panel-body">${members.map((m) => `<div class="link-row"><button class="text-link" data-action="open" data-id="${m.entity_id}">${h(label(m.entity_id))} ↗</button>${button("그룹에서 제거", "remove-membership", m.id, "ghost small")}</div>`).join("") || '<p class="muted">아직 연결한 자료가 없습니다.</p>'}${button("+ 자료 연결", "group-add-entity", g.id, "ghost small")}</div></section>`;
+          const allMembers = sorted(active("memberships").filter(m=>m.group_id===g.id));
+          const members = ui.tab === "main" ? allMembers.filter(m=>scopedEntities(db,[lookup(m.entity_id)].filter(Boolean),mainContext()).length) : allMembers;
+          return `<section class="panel"><div class="panel-header"><div><span class="eyebrow">${g.parent_id ? h(label(g.parent_id)) + " / " : ""}COLLECTION</span><h2>${h(g.name)}</h2><p class="muted">${h(g.description || "설명 없음")}</p></div><div class="actions">${button("수정", "edit-group", g.id, "ghost small")}${button("삭제", "delete-group", g.id, "danger small")}</div></div><div class="panel-body"><p class="muted small-text">선택 범위의 자료 ${members.length}개 / 전체 ${allMembers.length}개</p>${members.map((m) => `<div class="link-row"><button class="text-link" data-action="open" data-id="${m.entity_id}">${h(label(m.entity_id))} ↗</button><div class="actions">${button("↑", "group-member-up", m.id, "ghost small")}${button("↓", "group-member-down", m.id, "ghost small")}${button("그룹에서 제거", "remove-membership", m.id, "ghost small")}</div></div>`).join("") || '<p class="muted">아직 연결한 자료가 없습니다.</p>'}${button("+ 자료 연결", "group-add-entity", g.id, "ghost small")}</div></section>`;
         })
         .join("") ||
       empty(
@@ -715,25 +824,15 @@ function groupsView() {
   );
 }
 function timelineView() {
-  return (
-    header(
-      "THE UNIVERSAL CHRONICLE",
-      "통합 연대기",
-      "연도 미확정 사건도 하나의 시간축에. 목록 순서와 세계관 속 연대는 별개입니다.",
-      button("+ 사건 기록", "new-event", "", "primary"),
-    ) +
-    `<div class="toolbar">${field("우주 절대 연도", input("timeline_year", ui.year ?? "", "미확정은 빈칸", 'type="number" id="timeline-year"'))}<select id="timeline-title" aria-label="연대기 타이틀">${options(
-      active("entities").filter((e) => e.kind === "title"),
-      ui.title,
-      "모든 작품",
-    )}</select>${button("시점 조회", "load-timeline", "", "primary")}${button("전체 시간 보기", "reset-time", "", "ghost")}</div><div id="timeline-result"><p class="muted">연대기를 불러오는 중…</p></div>`
-  );
+  const titleSelector = ui.tab === "main" ? "" : `<select id="timeline-title" aria-label="연대기 타이틀">${options(active("entities").filter(e=>e.kind==="title"),ui.title,"모든 작품")}</select>`;
+  return header("THE UNIVERSAL CHRONICLE","통합 연대기","연도 미확정 사건도 하나의 시간축에. 목록 순서와 세계관 속 연대는 별개입니다.",button("+ 사건 기록","new-event","","primary")) + `<div class="toolbar">${field("우주 절대 연도",input("timeline_year",ui.year??"","미확정은 빈칸",'type="number" id="timeline-year"'))}${titleSelector}${button("시점 조회","load-timeline","","primary")}${button("전체 시간 보기","reset-time","","ghost")}</div><div id="timeline-result"><p class="muted">연대기를 불러오는 중…</p></div>`;
 }
 async function loadTimeline() {
-  const q = new URLSearchParams();
-  if (ui.year !== "" && ui.year !== undefined && ui.year !== null)
-    q.set("year", ui.year);
-  if (ui.title) q.set("title_id", ui.title);
+  const q = new URLSearchParams(ui.tab === "main" ? timelineParameters(mainContext(),ui.year) : {});
+  if (ui.tab !== "main") {
+    if (ui.year !== "" && ui.year != null) q.set("year",ui.year);
+    if (ui.title) q.set("title_id",ui.title);
+  }
   const result = await api("/timeline?" + q);
   const el = $("#timeline-result");
   if (!el) return;
@@ -748,7 +847,7 @@ async function loadTimeline() {
   const states = result.effective_states || result.states || [],
     relations = result.effective_relations || result.relations || [];
   el.innerHTML = `${(result.conflicts || []).length ? `<div class="conflict"><strong>충돌을 확인하세요</strong>${result.conflicts.map((c) => `<p>${h(typeof c === "string" ? c : c.message || JSON.stringify(c))}</p>`).join("")}</div>` : ""}<div class="overview-grid"><section class="panel"><div class="panel-header"><h2>사건의 흐름</h2>${tag(events.length + "개 기록")}</div><div class="panel-body">${events.map((e) => `<div class="timeline-row"><span class="time-tag">${h(timeLabel(e.data?.time || e.time))}</span><div><button class="text-link" data-action="open" data-id="${e.id}">${h(e.name)} ↗</button><p>${h(e.description || "")}</p></div><div class="actions">${button("↑", "reorder-up", e.id, "ghost small")}${button("↓", "reorder-down", e.id, "ghost small")}</div></div>`).join("") || empty("아직 기록된 사건이 없습니다", "미확정 연도로도 첫 사건을 기록할 수 있습니다.")}</div></section><section class="panel"><div class="panel-header"><h2>중첩되는 작품의 시간</h2></div><div class="panel-body">${titles
-    .filter((t) => !ui.title || t.id === ui.title)
+    .filter((t) => !(ui.tab === "main" ? ui.mainTitle : ui.title) || t.id === (ui.tab === "main" ? ui.mainTitle : ui.title))
     .map(
       (t) =>
         `<div class="timeline-row"><span class="time-tag">${h(timeLabel(t.data?.time))}</span><button class="text-link" data-action="open" data-id="${t.id}">${h(t.name)} ↗</button></div>`,
@@ -820,6 +919,8 @@ function trashView() {
   );
 }
 function render() {
+  setMainContext(normalizeMainContext(db,mainContext()));
+  if (ui.tab === "main" && ui.view === "background") ui.view = "spaces";
   disposeAtlas?.();
   disposeAtlas = undefined;
   persist();
@@ -828,7 +929,10 @@ function render() {
   if (ui.view === "overview") page.innerHTML = overview();
   else if (ui.view === "atlas") {
     page.innerHTML = header("WORLD ARCHIVE / SPACE", "3D 우주 지도", "기존 자료를 읽기 전용으로 탐색합니다.", button("← 공간 목록", "view", "spaces", "ghost")) + '<div id="atlas-root"></div>';
-    disposeAtlas = mountAtlas($("#atlas-root"), active("entities"), active("relations"));
+    const all = active("entities"), scoped = scopedEntities(db,all,mainContext()), spaces = all.filter(e=>["space","planet"].includes(e.kind));
+    const ancestors = withSpaceAncestors(spaces,scoped.filter(e=>["space","planet"].includes(e.kind)));
+    const ids = new Set([...scoped,...ancestors].map(e=>e.id));
+    disposeAtlas = mountAtlas($("#atlas-root"), all.filter(e=>ids.has(e.id)), active("relations"));
   }
   else if (ui.view === "groups") page.innerHTML = groupsView();
   else if (ui.view === "timeline") {
@@ -837,10 +941,12 @@ function render() {
   } else if (["story", "book"].includes(ui.view)) page.innerHTML = writing();
   else if (ui.view === "trash") page.innerHTML = trashView();
   else page.innerHTML = archive();
+  if (ui.tab === "main") page.insertAdjacentHTML("afterbegin",peopleNavigation());
   if (db.meta?.migration_status === "backup_missing") {
     page.insertAdjacentHTML("afterbegin", `<section class="migration-notice" role="status"><div><strong>기존 자료 이전 대기</strong><p>이 주소에는 아직 기존 작업실의 백업을 가져오지 않았습니다. 기존 자료와 미저장 초안은 자동으로 옮겨지지 않습니다.</p></div><button class="button ghost small" data-action="backup">백업 가져오기</button></section>`);
   }
   bindForms();
+  bindMainForms();
 }
 function openDialog(title, html, onSubmit, submit = "저장", wide = false) {
   const dialog = $("#dialog");
@@ -864,6 +970,7 @@ function defaultKind() {
     {
       character: "character",
       organization: "organization",
+      civilization: "civilization",
       event: "event",
       spaces: "space",
       setting: "setting",
@@ -876,7 +983,7 @@ function defaultKind() {
 function newEntity(kind = defaultKind()) {
   const key = "new:" + kind;
   const draft = localDrafts[key];
-  const e = draft || { name: "", kind, description: "", data: {} };
+  const e = draft || { name: "", kind, description: "", data: kind === "title" ? {generation_id:ui.mainGeneration} : kind === "event" ? {title_id:ui.mainTitle || null} : {} };
   openDialog(
     "새 " + names[kind],
     `<div class="form-grid">${entityFields(e)}</div>`,
@@ -979,7 +1086,7 @@ function groupEditor(g = {}) {
         g.parent_id,
         "최상위 그룹",
       )}</select>`,
-    )}${field("설명", textarea("description", g.description), true)}</div>`,
+    )}${field("표시 순서",input("sort_order",g.sort_order??0,"",'type="number"'))}${field("설명", textarea("description", g.description), true)}</div>`,
     async (fd) => {
       await mutate(
         "/groups" + (g.id ? "/" + g.id : ""),
@@ -988,6 +1095,7 @@ function groupEditor(g = {}) {
           name: fd.get("name"),
           parent_id: fd.get("parent_id") || null,
           description: fd.get("description"),
+          sort_order: Number(fd.get("sort_order") || 0),
         },
       );
     },
@@ -1230,9 +1338,11 @@ function stashView() {
   ui.lastViews[ui.tab] = ui.view;
 }
 async function changeView(view, tab) {
+  if (view === "overview" && tab !== "writing") view = "character";
   await flushBeforeNavigation();
   stashView();
   ui.view = view;
+  if (["spaces","setting","timeline","atlas"].includes(view)) ui.backgroundOpen = true;
   ui.tab =
     tab ||
     (["story", "book", "thought", "thinker"].includes(view)
@@ -1358,6 +1468,97 @@ function bindForms() {
       }
     });
 }
+function profileRaw(form) { return captureFormFields(form); }
+function restoreProfileRaw(form, raw) { restoreFormFields(form,raw); }
+
+function updateProfileModes(form) {
+  for (const select of $$('[data-profile-mode]',form)) {
+    const row=select.closest('[data-profile-key]'), inherited=select.value==="common";
+    for(const fieldset of $$('.profile-value fieldset',row)) fieldset.disabled=inherited;
+    for(const control of $$('.profile-value input,.profile-value textarea,.profile-value select',row)) control.disabled=inherited;
+    $('.profile-source',row).textContent=inherited?"공통 설정 상속":"타이틀별 개별 설정";
+  }
+}
+function readTitleSettings(form) {
+  return titleSettingsPayload(new FormData(form).entries(),PROFILE_FIELDS,undefined);
+}
+
+function bindMainForms() {
+  const title=$('#main-title-select');
+  if(title)title.onchange=safe(async()=>{await flushBeforeNavigation();setMainContext({...mainContext(),titleId:title.value});ui.selected=null;render();});
+  const common=$('#main-common-toggle');
+  if(common)common.onchange=safe(async()=>{await flushBeforeNavigation();ui.includeCommon=common.checked;ui.selected=null;render();});
+  const appearance=$('#appearance-form');
+  if(appearance) {
+    const character=lookup(appearance.dataset.id),key="appearance-checks:"+character.id;
+    const snapshot=()=>{
+      const previous=localDrafts[key];
+      localDrafts[key]={title_ids:new FormData(appearance).getAll('title_ids'),base_revision:previous?.base_revision??character.revision,appearance_revisions:previous?.appearance_revisions??Object.fromEntries(appearancesFor(db,character.id,{includeArchived:true}).map(r=>[r.id,r.revision]))};
+      draftsPersist();setStatus("등장 작품 선택 · 브라우저 임시 보관");
+    };
+    appearance.addEventListener('change',snapshot);
+    appearance.onsubmit=safe(async ev=>{
+      ev.preventDefault();
+      const ids=new FormData(appearance).getAll('title_ids'),removed=detachedAppearances(db,character.id,ids);
+      const content=removed.filter(hasAppearanceContent);
+      if(removed.length&&!confirm(`등장 연결 ${removed.length}개를 해제하시겠습니까?${content.length?" 작품별 내용이 있는 연결도 삭제하지 않고 보관합니다.":""} 인물과 기존 기록은 유지됩니다.`))return;
+      const draft=localDrafts[key];
+      await api('/characters/'+character.id+'/appearances','POST',appearanceSelectionPayload(db,character,ids,draft,removed.length>0));
+      delete localDrafts[key];draftsPersist();await refresh();setStatus("모든 변경사항 저장됨");toast("등장 작품 연결을 저장했습니다.");
+    });
+  }
+  const profile=$('#title-settings-form');
+  if(profile) {
+    const key=titleDraftKey(profile.dataset.character,profile.dataset.title),relation=db.relations.find(r=>r.id===profile.dataset.relation);
+    restoreProfileRaw(profile,localDrafts[key]?.raw);updateProfileModes(profile);
+    const snapshot=()=>{localDrafts[key]={raw:profileRaw(profile),base_revision:localDrafts[key]?.base_revision??relation.revision};draftsPersist();setStatus("작품별 설정 · 브라우저 임시 보관");};
+    profile.addEventListener('input',snapshot);
+    profile.addEventListener('change',()=>{updateProfileModes(profile);snapshot();});
+    profile.onsubmit=safe(async ev=>{
+      ev.preventDefault();const body=readTitleSettings(profile),revision=localDrafts[key]?.base_revision??relation.revision;
+      await api('/characters/'+profile.dataset.character+'/title-settings/'+profile.dataset.title,'PATCH',{...body,revision});
+      delete localDrafts[key];draftsPersist();await refresh();setStatus("모든 변경사항 저장됨");toast("이 작품의 설정을 저장했습니다.");
+    });
+  }
+}
+async function reviewTitleDraft() {
+  const form=$('#title-settings-form');if(!form)return;
+  const characterId=form.dataset.character,titleId=form.dataset.title,key=titleDraftKey(characterId,titleId),payload=readTitleSettings(form);
+  localDrafts[key]={raw:profileRaw(form),base_revision:localDrafts[key]?.base_revision??db.relations.find(r=>r.id===form.dataset.relation)?.revision};draftsPersist();
+  await refresh(false);
+  const character=lookup(characterId),relation=appearanceFor(db,characterId,titleId);
+  if(!character||character.deleted_at||!relation)throw new Error('인물 또는 등장 연결이 변경되었습니다. 초안은 보존했습니다. 등장 작품 연결을 확인한 뒤 다시 시도하세요.');
+  const current=resolveTitleProfile(character,relation),common=commonProfile(character);
+  const rows=PROFILE_FIELDS.map(info=>{
+    const intended=Object.hasOwn(payload.overrides,info.key)?payload.overrides[info.key]:payload.inherit_fields.includes(info.key)?common[info.key]:current.values[info.key];
+    return `<tr><th>${h(info.label)}</th><td>${h(profileDisplay(current.values[info.key]))}</td><td>${h(profileDisplay(intended))}<small>${payload.inherit_fields.includes(info.key)?"공통 설정 사용":"타이틀별 개별 설정"}</small></td></tr>`;
+  }).join('');
+  openDialog('작품별 설정 충돌 확인',`<p>${h(label(titleId))}의 최신 저장 내용과 내 초안을 비교하세요. 다른 작품과 공통 설정은 유지됩니다.</p><div class="comparison-scroll"><table class="draft-comparison"><thead><tr><th>항목</th><th>최신 저장 내용</th><th>저장할 내 초안</th></tr></thead><tbody>${rows}</tbody></table></div><label class="checkbox-row"><input type="checkbox" name="confirmed" required> 차이를 확인했으며 이 작품에 내 초안을 저장합니다.</label>`,async()=>{
+    await api('/characters/'+characterId+'/title-settings/'+titleId,'PATCH',{...payload,revision:relation.revision});
+    delete localDrafts[key];draftsPersist();await refresh();setStatus('모든 변경사항 저장됨');toast('확인한 작품별 초안을 저장했습니다.');
+  },'확인한 초안 저장',true);
+}
+async function reviewAppearanceDraft(characterId) {
+  const form=$('#appearance-form');if(!form||form.dataset.id!==characterId)return;
+  const ids=new FormData(form).getAll('title_ids'),key='appearance-checks:'+characterId;
+  localDrafts[key]={...(localDrafts[key]||{}),title_ids:ids};draftsPersist();
+  await refresh(false);
+  const character=lookup(characterId);if(!character||character.deleted_at)throw new Error('인물이 삭제되어 연결을 변경할 수 없습니다. 초안은 보존했습니다.');
+  const all=appearancesFor(db,characterId,{includeArchived:true}),current=appearancesFor(db,characterId),removed=detachedAppearances(db,characterId,ids);
+  const titleFor=r=>r.source_id===characterId?r.target_id:r.source_id;
+  openDialog('등장 작품 연결 충돌 확인',`<p>최신 연결과 저장할 선택을 확인하세요. 인물 ID와 공통 설정, 연결 해제되는 작품의 기록은 보존됩니다.</p><div class="overview-grid"><section><h3>최신 저장된 등장 작품</h3><p>${current.map(r=>h(label(titleFor(r)))).join(', ')||'연결 없음'}</p></section><section><h3>저장할 내 선택</h3><p>${ids.map(id=>h(label(id))).join(', ')||'연결 없음'}</p></section></div>${removed.length?`<p class="callout">연결 해제 후 보관할 작품: ${removed.map(r=>h(label(titleFor(r)))+(hasAppearanceContent(r)?' (작품별 내용 보관)':'')).join(', ')}</p>`:''}<label class="checkbox-row"><input type="checkbox" name="confirmed" required> 최신 연결과 차이를 확인했으며 내 선택을 저장합니다.</label>`,async()=>{
+    await api('/characters/'+characterId+'/appearances','POST',{title_ids:ids,revision:character.revision,appearance_revisions:Object.fromEntries(all.map(r=>[r.id,r.revision])),confirm_detach:removed.length>0});
+    delete localDrafts[key];draftsPersist();await refresh();setStatus('모든 변경사항 저장됨');toast('확인한 등장 작품 연결을 저장했습니다.');
+  },'확인한 연결 저장',true);
+}
+
+async function reorderGroupMember(id,direction) {
+  const current=db.memberships.find(m=>m.id===id),members=sorted(active('memberships').filter(m=>m.group_id===current.group_id)),index=members.findIndex(m=>m.id===id),other=members[index+direction];
+  if(!other)return;
+  for(let i=0;i<members.length;i++)await api('/memberships/'+members[i].id,'PATCH',{sort_order:(i===index?index+direction:i===index+direction?index:i)*10,revision:members[i].revision});
+  await refresh();
+}
+
 async function deleteEntity(id) {
   const e = lookup(id);
   const impact = await api("/entities/" + id + "/impact");
@@ -1484,7 +1685,11 @@ async function reorder(collection, id, direction) {
         )
       : ui.view === "timeline"
         ? sorted(active("entities").filter((x) => x.kind === "event"))
-        : entityList();
+        : collection === "entities" && lookup(id)?.kind === "title"
+          ? titlesForGeneration(db,lookup(id).data?.generation_id)
+          : collection === "entities" && lookup(id)?.kind === "generation"
+            ? catalogGenerations(db)
+            : entityList();
   const i = list.findIndex((x) => x.id === id),
     other = list[i + direction];
   if (!other) return;
@@ -1537,10 +1742,42 @@ document.addEventListener(
       $("#dialog").close();
       return;
     }
-    if (action === "home") return changeView("overview", "main");
+    if (action === "toggle-background") {
+      ui.backgroundOpen=!ui.backgroundOpen;persist();
+      const menu=$('#background-navigation');if(menu)menu.hidden=!ui.backgroundOpen;
+      b.setAttribute('aria-expanded',String(ui.backgroundOpen));const arrow=$('.nav-chevron',b);if(arrow)arrow.textContent=ui.backgroundOpen?'⌃':'⌄';
+      return;
+    }
+    if (action === "select-generation") {
+      await flushBeforeNavigation();setMainContext(normalizeMainContext(db,{...mainContext(),generationId:id,titleId:null}));ui.selected=null;render();return;
+    }
+    if(action === "setup-catalog") {
+      await flushBeforeNavigation();const result=await api('/catalog/reconcile','POST',{});await refresh();toast(result.created_ids?.length?'세대와 타이틀을 등록했습니다.':'기존 세대와 타이틀을 확인했습니다.');return;
+    }
+    if(action === "open-title-slot") {
+      await flushBeforeNavigation();const [characterId,titleId]=id.split("|");ui.tab="main";ui.view="character";ui.selected=characterId;ui.characterSlots||={};ui.characterSlots[characterId]=titleId;setMainContext(contextForEntity(db,lookup(titleId),mainContext()));render();return;
+    }
+    if(action === "character-slot") {
+      await flushBeforeNavigation();const [characterId,titleId]=id.split('|');ui.characterSlots||={};ui.characterSlots[characterId]=titleId;render();return;
+    }
+    if(action === "rebase-title-draft")return reviewTitleDraft();
+    if(action === "rebase-appearance-draft")return reviewAppearanceDraft(id);
+    if(action === "discard-appearance-draft") {
+      const key="appearance-checks:"+id;
+      if(localDrafts[key]&&!confirm("미저장 등장 작품 선택을 버리고 저장된 연결을 불러오시겠습니까?"))return;
+      delete localDrafts[key];draftsPersist();await refresh();return;
+    }
+    if(action === "discard-title-draft") {
+      if(!confirm('이 슬롯의 브라우저 초안을 버리고 저장된 설정을 불러오시겠습니까?'))return;
+      delete localDrafts[id];draftsPersist();await refresh();return;
+    }
+    if(action === "new-event-relation")return eventRelationEditor(id);
+    if(action === "new-generation")return newEntity('generation');
+    if(action === "group-member-up" || action === "group-member-down")return reorderGroupMember(id,action === "group-member-up"?-1:1);
+    if (action === "home") return changeView("character", "main");
     if (action === "tab")
       return changeView(
-        ui.lastViews?.[id] || (id === "main" ? "overview" : "story"),
+        ui.lastViews?.[id] || (id === "main" ? "character" : "story"),
         id,
       );
     if (action === "view" || action === "quick") return changeView(id);
@@ -1578,14 +1815,16 @@ document.addEventListener(
         ui.view = e.kind;
       } else {
         ui.tab = ["thought", "thinker"].includes(e.kind) ? "writing" : "main";
-        ui.view = "archive";
+        ui.view = ["character","event","setting"].includes(e.kind) ? e.kind : e.kind === "civilization" ? "civilization" : e.kind === "organization" ? "organization" : ["space","planet"].includes(e.kind) ? "spaces" : ["title","generation"].includes(e.kind) ? "generations" : "archive";
+        if (ui.tab === "main") setMainContext(contextForEntity(db,e,mainContext()));
+        if (["spaces","setting","timeline","atlas"].includes(ui.view)) ui.backgroundOpen = true;
       }
       render();
       return;
     }
     if (action === "title-filter") {
       await changeView("archive", "main");
-      ui.title = id;
+      setMainContext({...mainContext(),titleId:id,generationId:generationForTitle(db,id)?.id||ui.mainGeneration});
       ui.query = "";
       ui.kind = "";
       ui.group = "";
@@ -1648,14 +1887,15 @@ document.addEventListener(
     }
     if (action === "load-timeline") {
       ui.year = $("#timeline-year").value;
-      ui.title = $("#timeline-title").value;
+      if (ui.tab === "main" && $("#timeline-title")) setMainContext({...mainContext(),titleId:$("#timeline-title").value,generationId:generationForTitle(db,$("#timeline-title").value)?.id||ui.mainGeneration});
+      else if (ui.tab !== "main") ui.title = $("#timeline-title").value;
       persist();
-      await loadTimeline();
+      render();
       return;
     }
     if (action === "reset-time") {
       ui.year = "";
-      ui.title = "";
+      if (ui.tab !== "main") ui.title = "";
       render();
       return;
     }
@@ -1736,7 +1976,8 @@ document.addEventListener(
   safe(async (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") {
       ev.preventDefault();
-      if ($("#manuscript")) await saveManuscript();
+      if ($("#title-settings-form")) $("#title-settings-form").requestSubmit();
+      else if ($("#manuscript")) await saveManuscript();
       else if ($("#entity-form")) $("#entity-form").requestSubmit();
     }
     if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") {
@@ -1755,5 +1996,5 @@ try {
   await refresh();
 } catch (e) {
   $("#app").innerHTML =
-    `<div class="empty"><h1>THE MYTH</h1><h2>아카이브에 연결할 수 없습니다.</h2><p>${h(e.message)}</p><button class="button primary" onclick="location.reload()">다시 연결</button><p>브라우저에 임시 보관된 편집 내용은 유지됩니다.</p></div>`;
+    `<div class="empty"><h1>The Myth</h1><h2>아카이브에 연결할 수 없습니다.</h2><p>${h(e.message)}</p><button class="button primary" onclick="location.reload()">다시 연결</button><p>브라우저에 임시 보관된 편집 내용은 유지됩니다.</p></div>`;
 }

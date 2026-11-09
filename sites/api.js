@@ -1,8 +1,11 @@
-import { Store, WRITABLE, fail } from './store.js';
+import { Store, WRITABLE, fail, validId } from './store.js';
+import { reconcileCatalog, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation } from './main-workspace.js';
+import { matchesTitleScope } from '../web/main-domain.js';
 
 const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin'};
 const json = (value,status=200,extra={}) => new Response(JSON.stringify(value),{status,headers:{...headers,'Content-Type':'application/json; charset=utf-8',...extra}});
 const isObject = value => value!==null&&typeof value==='object'&&!Array.isArray(value);
+const pathId = value => { let id;try{id=decodeURIComponent(value);}catch{fail('연결 ID의 URL 인코딩이 잘못되었습니다.');}if(!validId(id))fail('유효한 고유 ID가 필요합니다.');return id; };
 
 async function body(request) {
   const length=request.headers.get('content-length');
@@ -64,10 +67,22 @@ export async function handleApi(request,env) {
     }
     const store=await Store.load(env);
     if(path==='/api/state'&&method==='GET') return json(store.state());
+    if(path==='/api/catalog/reconcile'&&method==='POST') {
+      await body(request);
+      const result=reconcileCatalog(store); await store.commit(); return json(result);
+    }
+    const appearanceMatch=path.match(/^\/api\/characters\/([^/]+)\/appearances$/);
+    if(appearanceMatch&&method==='POST') {
+      const result=setCharacterAppearances(store,pathId(appearanceMatch[1]),await body(request)); await store.commit(); return json(result);
+    }
+    const settingsMatch=path.match(/^\/api\/characters\/([^/]+)\/title-settings\/([^/]+)$/);
+    if(settingsMatch&&method==='PATCH') {
+      const result=updateTitleSettings(store,pathId(settingsMatch[1]),pathId(settingsMatch[2]),await body(request)); await store.commit(); return json(result);
+    }
     if(path==='/api/timeline'&&method==='GET') {
       const raw=url.searchParams.get('year'),year=raw===null?null:Number(raw);
       if(raw!==null&&(raw.trim()===''||!Number.isFinite(year))) fail('유한한 숫자 연도를 입력하세요.');
-      return json(timeline(store.state(),year,url.searchParams.get('title_id')));
+      return json(timeline(store.state(),year,url.searchParams.get('title_id'),{generationId:url.searchParams.get('generation_id'),includeCommon:url.searchParams.get('include_common')!=='0'}));
     }
     if(path==='/api/backup'&&method==='GET') return json(store.backup(),200,{'Content-Disposition':'attachment; filename="the-myth-backup.json"'});
     if(path==='/api/backup/restore'&&method==='POST') {
@@ -88,11 +103,12 @@ export async function handleApi(request,env) {
       fail('경로를 찾을 수 없습니다.',404);
     }
     if(method==='GET') return json(id?store.get(collection,id):store.all(collection));
-    let result;
+    let result,previous=null;
     if(method==='POST'&&!id) result=store.create(collection,await body(request));
-    else if(method==='PATCH'&&id) result=store.update(collection,id,await body(request));
+    else if(method==='PATCH'&&id) {previous=store.get(collection,id);result=store.update(collection,id,await body(request));}
     else if(method==='DELETE'&&id) result=store.delete(collection,id);
     else fail('허용되지 않는 요청 방식입니다.',405);
+    if(['POST','PATCH'].includes(method)) validateWorkspaceMutation(store,collection,result,previous);
     await store.commit(); return json(result);
   } catch(error) {
     if(error.status) return json({detail:error.detail??error.message},error.status);
@@ -125,13 +141,16 @@ export function active_at(record, year) {
   if ((pythonTruthy(record.start) && start === null) || (pythonTruthy(record.end) && end === null) || (start === null && end === null)) return 'uncertain';
   return (start === null || start <= year) && (end === null || year <= end) ? 'effective' : 'inactive';
 }
-export function timeline(state, year = null, title_id = null) {
+export function timeline(state, year = null, title_id = null, {generationId = null, includeCommon = true} = {}) {
   const entities = state.entities.filter(e => !pythonTruthy(e.deleted_at));
-  const relations = state.relations.filter(r => !pythonTruthy(r.deleted_at));
-  const states = state.states.filter(r => !pythonTruthy(r.deleted_at));
+  let relations = state.relations.filter(r => !pythonTruthy(r.deleted_at));
+  let states = state.states.filter(r => !pythonTruthy(r.deleted_at));
   const by_id = new Map(entities.map(e => [e.id, e]));
   const selected_title = title_id ? by_id.get(title_id) : null;
   if (title_id && (!selected_title || selected_title.kind !== 'title')) fail('선택한 타이틀을 찾을 수 없습니다.', 404);
+  const selectedGeneration = generationId ? by_id.get(generationId) : null;
+  if(generationId&&(!selectedGeneration||selectedGeneration.kind!=='generation')) fail('선택한 세대를 찾을 수 없습니다.',404);
+  if(generationId&&selected_title&&selected_title.data?.generation_id!==generationId) fail('선택한 세대와 타이틀이 일치하지 않습니다.');
   const window = selected_title && year === null ? bounds(selected_title) : [year, year];
   const related = new Set(title_id ? [title_id] : by_id.keys());
   if (title_id) {
@@ -139,15 +158,27 @@ export function timeline(state, year = null, title_id = null) {
       if ([relation.source_id, relation.target_id].includes(title_id)) related.add(relation.target_id === title_id ? relation.source_id : relation.target_id);
     }
   }
-  const items = entities.filter(e => ['event', 'title'].includes(e.kind) && (!title_id || related.has(e.id)));
+  const scoped = !!title_id || !!generationId;
+  const scope = {generationId:generationId??'',titleId:title_id??'',includeCommon};
+  const visibleEntity = id => matchesTitleScope(state,by_id.get(id),scope);
+  if(scoped) {
+    states=states.filter(record=>visibleEntity(record.entity_id));
+    relations=relations.filter(record=>{
+      if(record.data?.title_id&&!matchesTitleScope(state,record,scope))return false;
+      const titleEndpoints=[record.source_id,record.target_id].filter(id=>by_id.get(id)?.kind==='title');
+      if(title_id&&titleEndpoints.length&&!titleEndpoints.includes(title_id))return false;
+      return visibleEntity(record.source_id)&&visibleEntity(record.target_id);
+    });
+  }
+  const items = entities.filter(e => ['event', 'title'].includes(e.kind) && (!scoped || matchesTitleScope(state,e,scope)));
   const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
   items.sort((a, b) => ((a.sort_order ?? 0) - (b.sort_order ?? 0)) || lexical(a.created_at ?? '', b.created_at ?? '') || lexical(a.id, b.id));
   const item_ids = new Set(items.map(i => i.id));
   const edges = new Map(Array.from(item_ids, id => [id, new Set()]));
   for (const relation of relations) {
     let a, b;
-    if (['before', '이전', 'precedes'].includes(relation.type)) [a, b] = [relation.source_id, relation.target_id];
-    else if (['after', '이후', 'follows'].includes(relation.type)) [a, b] = [relation.target_id, relation.source_id];
+    if (['before', '이전', 'precedes', 'causes'].includes(relation.type)) [a, b] = [relation.source_id, relation.target_id];
+    else if (['after', '이후', 'follows', 'caused_by'].includes(relation.type)) [a, b] = [relation.target_id, relation.source_id];
     else continue;
     if (item_ids.has(a) && item_ids.has(b)) edges.get(a).add(b);
   }
@@ -211,11 +242,11 @@ export function timeline(state, year = null, title_id = null) {
     }
   }
   for (const relation of relations) {
-    if (!['before', 'after', '이전', '이후', 'precedes', 'follows'].includes(relation.type)) continue;
+    if (!['before', 'after', '이전', '이후', 'precedes', 'follows', 'causes', 'caused_by'].includes(relation.type)) continue;
     const source = by_id.get(relation.source_id), target = by_id.get(relation.target_id);
     if (!source || !target) continue;
     const [sa] = bounds(source), [ta] = bounds(target);
-    if (sa !== null && ta !== null && ((['before', '이전', 'precedes'].includes(relation.type) && sa > ta) || (['after', '이후', 'follows'].includes(relation.type) && sa < ta))) conflicts.push({ type: 'date_order', message: '확정 연도와 사건 선후 관계가 충돌합니다.', ids: [relation.id] });
+    if (sa !== null && ta !== null && ((['before', '이전', 'precedes', 'causes'].includes(relation.type) && sa > ta) || (['after', '이후', 'follows', 'caused_by'].includes(relation.type) && sa < ta))) conflicts.push({ type: 'date_order', message: '확정 연도와 사건 선후 관계가 충돌합니다.', ids: [relation.id] });
   }
-  return { year, title_id, observation_range: { start: window[0], end: window[1] }, items: ordered, events: ordered.filter(e => e.kind === 'event'), titles: ordered.filter(e => e.kind === 'title'), effective_states, effective_relations, uncertain, conflicts };
+  return { year, title_id, generation_id:generationId, observation_range: { start: window[0], end: window[1] }, items: ordered, events: ordered.filter(e => e.kind === 'event'), titles: ordered.filter(e => e.kind === 'title'), effective_states, effective_relations, uncertain, conflicts };
 }

@@ -82,3 +82,5 @@ yarn-error.log*
 /public/app.js
 /public/styles.css
 /public/atlas-*.js
+/public/main-domain.js
+/public/main-view-model.js

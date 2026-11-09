@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .store import Store, WRITABLE, fail, timeline
+from .main_workspace import reconcile_catalog, sync_appearances, update_title_settings
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def create_app(db_path=None):
     store = Store(db_path or os.environ.get("MYTH_DB_PATH", str(ROOT / "data" / "myth.sqlite3")))
-    app = FastAPI(title="THE MYTH", version="1.0.0")
+    app = FastAPI(title="The Myth", version="1.0.0")
     app.state.store = store
 
     @app.middleware("http")
@@ -48,10 +49,10 @@ def create_app(db_path=None):
         return store.state()
 
     @app.get("/api/timeline")
-    def get_timeline(year: float | None = None, title_id: str | None = None):
+    def get_timeline(year: float | None = None, title_id: str | None = None, generation_id: str | None = None, include_common: bool = True):
         if year is not None and not math.isfinite(year):
             fail("유한한 숫자 연도를 입력하세요.")
-        return timeline(store.state(), year, title_id)
+        return timeline(store.state(), year, title_id, generation_id, include_common)
 
     @app.get("/api/backup")
     def backup():
@@ -60,6 +61,21 @@ def create_app(db_path=None):
     @app.post("/api/backup/restore")
     def import_backup(payload: dict = Body(...)):
         return store.import_backup(payload.get("backup"), payload.get("mode", "merge"), payload.get("confirm"))
+
+    @app.post("/api/catalog/reconcile")
+    def register_main_catalog(payload: dict = Body(default={})):
+        with store.transaction() as db:
+            return reconcile_catalog(store, db)
+
+    @app.post("/api/characters/{id}/appearances")
+    def set_appearances(id: str, payload: dict = Body(...)):
+        with store.transaction() as db:
+            return sync_appearances(store, db, id, payload)
+
+    @app.patch("/api/characters/{id}/title-settings/{title_id}")
+    def set_title_settings(id: str, title_id: str, payload: dict = Body(...)):
+        with store.transaction() as db:
+            return update_title_settings(store, db, id, title_id, payload)
 
     @app.get("/api/entities/{id}/impact")
     @app.post("/api/entities/{id}/impact")

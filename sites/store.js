@@ -1,5 +1,6 @@
 // D1 adapter for the original myth/store.py domain model.
 // Reads are one snapshot; every multi-record change commits as one guarded batch.
+import { validateWorkspaceRecord } from './main-workspace.js';
 export const COLLECTIONS = ['entities','relations','groups','memberships','states','documents','chapters','versions'];
 export const WRITABLE = COLLECTIONS.slice(0,-1);
 const KINDS = new Set(['generation','title','character','organization','event','space','planet','civilization','setting','thought','thinker','custom']);
@@ -152,6 +153,7 @@ export class Store {
       if(!r.document_id) fail('장·절이 속할 원고를 선택하세요.'); this.existsReference(r.document_id,['documents']); this.hierarchy(table,r);
     }
     if(['relations','states'].includes(table)) { const start=numeric(r.start),end=numeric(r.end,true); if(start!=null&&end!=null&&start>end) fail('관계·상태의 시작은 종료보다 늦을 수 없습니다.'); }
+    validateWorkspaceRecord(this,table,r);
   }
   create(table,values) {
     const r={id:values.id||newId(),revision:1,created_at:now(),updated_at:now(),deleted_at:null};
