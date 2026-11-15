@@ -902,7 +902,7 @@ async function loadTimeline() {
   const states = result.effective_states || result.states || [],
     relations = result.effective_relations || result.relations || [];
   el.innerHTML = `${(result.conflicts || []).length ? `<div class="conflict"><strong>충돌을 확인하세요</strong>${result.conflicts.map((c) => `<p>${h(typeof c === "string" ? c : c.message || JSON.stringify(c))}</p>`).join("")}</div>` : ""}<div class="overview-grid"><section class="panel"><div class="panel-header"><h2>사건의 흐름</h2>${tag(events.length + "개 기록")}</div><div class="panel-body">${events.map((e) => `<div class="timeline-row"><span class="time-tag">${h(timeLabel(e.data?.time || e.time))}</span><div><button class="text-link" data-action="open" data-id="${e.id}">${h(e.name)} ↗</button><p>${h(e.description || "")}</p></div><div class="actions">${button("↑", "reorder-up", e.id, "ghost small")}${button("↓", "reorder-down", e.id, "ghost small")}</div></div>`).join("") || empty("아직 기록된 사건이 없습니다", "미확정 연도로도 첫 사건을 기록할 수 있습니다.")}</div></section><section class="panel"><div class="panel-header"><h2>중첩되는 작품의 시간</h2></div><div class="panel-body">${titles
-    .filter((t) => !(ui.tab === "main" ? ui.mainTitle : ui.title) || t.id === (ui.tab === "main" ? ui.mainTitle : ui.title))
+    .filter((t) => ui.tab === "main" || !ui.title || t.id === ui.title)
     .map(
       (t) =>
         `<div class="timeline-row"><span class="time-tag">${h(timeLabel(t.data?.time))}</span><button class="text-link" data-action="open" data-id="${t.id}">${h(t.name)} ↗</button></div>`,

@@ -133,7 +133,7 @@ test('top generation navigation keeps event titles local, restores the workspace
   class Element {
     constructor(doc,id='') {this.doc=doc;this.id=id;this._html='';this.value='';this.checked=false;this.hidden=false;this.dataset={};this.events={};this.classList={toggle(){},add(){},remove(){}};}
     get innerHTML(){return this._html;}
-    set innerHTML(value){this._html=String(value);this.doc.controls.clear();this.doc.titleTabs.clear();if(this.id==='app')this.doc.page._html='';}
+    set innerHTML(value){this._html=String(value);if(this.id==='timeline-result')this.doc.lastTimelineHTML=this._html;this.doc.controls.clear();this.doc.titleTabs.clear();if(this.id==='app')this.doc.page._html='';}
     insertAdjacentHTML(where,value){this._html=where==='afterbegin'?String(value)+this._html:this._html+String(value);this.doc.controls.clear();}
     setAttribute(name,value){this[name]=value;}
     querySelector(selector){if(selector==='.nav-chevron')return this.arrow ||= new Element(this.doc);return null;}
@@ -194,7 +194,7 @@ test('top generation navigation keeps event titles local, restores the workspace
     {id:'person-g3',kind:'character',name:'3세대에만 등장',revision:1,data:{generation_model_version:1}},
   );
   fixture.relations.push({id:'generation-person-g3',type:'generation_appearance',source_id:'person-g3',target_id:'g3',revision:1,data:{generation_schema:1,affiliations:[],ideology_rank:'',narrative:''}});
-  globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>String(path).startsWith('/api/timeline')?{events:[],titles:[],states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
+  globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>String(path).startsWith('/api/timeline')?{events:[],titles:fixture.entities.filter(e=>e.kind==='title'&&e.data?.generation_id===new URL(path,'https://fixture').searchParams.get('generation_id')),states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
   globalThis.__mainNavigationAtlas=(...args)=>{atlasCalls.push(args);return ()=>{};};
   try {
     let source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
@@ -240,6 +240,7 @@ test('top generation navigation keeps event titles local, restores the workspace
     await click('load-timeline');
     const query=new URL(requests.filter(r=>r.path.startsWith('/api/timeline')).at(-1).path,'http://fixture').searchParams;
     assert.equal(query.has('title_id'),false);assert.equal(query.get('generation_id'),'g1');assert.equal(query.get('year'),'2040');
+    assert.ok(doc.lastTimelineHTML.includes('위버멘쉬'));assert.ok(doc.lastTimelineHTML.includes('마몬'),'cached event title must not hide overlapping titles in the generation timeline');
     assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t2','hiding the picker must not erase its last event selection');
     await click('tab','writing');await click('select-generation','g1');
     const restored=JSON.parse(storage.get('myth-ui'));
