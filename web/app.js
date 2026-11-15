@@ -764,6 +764,8 @@ function entityFields(e) {
     "title_id",
     "result",
     "catalog_key",
+    "catalog_key_v2",
+    "generation_model_version",
     "appearance_revision",
     ...(e.kind === "character" ? PROFILE_FIELDS.map(f=>f.key) : []),
   ];

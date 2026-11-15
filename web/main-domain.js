@@ -187,6 +187,12 @@ export function matchesTitleScope(state, item, { generationId = '', titleId = ''
   return ids.some(id => generationForTitle(state, id)?.id === generationId);
 }
 export function catalogKey(number, title = null) { return title === null ? `generation:${number}` : `title:${number}:${title}`; }
+// The v8 reader only knows the legacy Universe marker. Retain it while adding
+// an independent canonical marker so rolling code back never recreates Chera.
+export function catalogMarkerMatches(row, number, title = null) {
+  if(number===3&&title==='체라')return row.data?.catalog_key===catalogKey(2,'체라')&&row.data?.catalog_key_v2===catalogKey(3,'체라');
+  return row.data?.catalog_key===catalogKey(number,title);
+}
 export function catalogStatus(state) {
   const entities = rows(state, 'entities'), missing = [], conflicts = [];
   for (const spec of CATALOG) {
@@ -197,9 +203,9 @@ export function catalogStatus(state) {
     const generation = tagged[0] ?? entities.find(row => row.kind === 'generation' && row.data?.number === spec.number);
     for (const title of spec.titles) {
       const key = catalogKey(spec.number, title);
-      const found = entities.filter(row => row.kind === 'title' && row.data?.catalog_key === key);
+      const found = entities.filter(row => row.kind === 'title' && catalogMarkerMatches(row,spec.number,title));
       if (found.length > 1) conflicts.push(`${title}의 등록 표식이 중복되었습니다.`);
-      if (!found.length) missing.push(key);
+      if (!found.length || spec.number===3&&title==='체라'&&generation&&found[0]?.data?.generation_id!==generation.id) missing.push(key);
     }
     if (generation && !tagged.length && entities.filter(row => active(row) && row.kind === 'generation' && row.data?.number === spec.number).length > 1) conflicts.push(`${spec.number}세대 객체가 여러 개입니다. 기존 ID를 먼저 확인하세요.`);
   }

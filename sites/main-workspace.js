@@ -1,4 +1,4 @@
-import { CATALOG, PROFILE_FIELDS, catalogKey, catalogStatus, appearancesFor, appearanceTitleId, generationForTitle, titleIdsForEntity, generationAppearanceId, generationAppearancesFor, generationAppearanceFor, generationIdsForCharacter } from '../web/main-domain.js';
+import { CATALOG, PROFILE_FIELDS, catalogKey, catalogMarkerMatches, catalogStatus, appearancesFor, appearanceTitleId, generationForTitle, titleIdsForEntity, generationAppearanceId, generationAppearancesFor, generationAppearanceFor, generationIdsForCharacter } from '../web/main-domain.js';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (detail, status = 422) => { throw Object.assign(new Error(typeof detail === 'string' ? detail : JSON.stringify(detail)), { detail, status }); };
@@ -140,20 +140,21 @@ export function reconcileCatalog(store) {
   for(const spec of CATALOG) {
     const generation=resultGenerations.find(row=>row.data.number===spec.number);
     for(const [index,name] of spec.titles.entries()) {
-      const key=catalogKey(spec.number,name), marked=entities().filter(row=>row.kind==='title'&&row.data?.catalog_key===key);
+      const key=catalogKey(spec.number,name), marked=entities().filter(row=>row.kind==='title'&&catalogMarkerMatches(row,spec.number,name));
       if(marked.length>1)fail({message:`${name} 등록 표식이 중복되었습니다.`,ids:marked.map(row=>row.id)},409);
       let title=marked[0];
       if(name==='체라'&&spec.number===3) {
-        const candidates=entities().filter(row=>row.kind==='title'&&(row.data?.catalog_key===catalogKey(2,'체라')||row.data?.catalog_key===key||normal(row.name)==='체라'));
+        const candidates=entities().filter(row=>row.kind==='title'&&(row.data?.catalog_key===catalogKey(2,'체라')||row.data?.catalog_key===key||row.data?.catalog_key_v2===key||normal(row.name)==='체라'));
         if(candidates.length>1)fail({message:'체라 타이틀이 중복되어 기존 ID를 결정할 수 없습니다.',ids:candidates.map(row=>row.id)},409);
         const existing=candidates[0];
         if(existing) {
           title=existing;
-          if(existing.data?.generation_id!==generation.id||existing.data?.catalog_key!==key) {
+          if(Object.hasOwn(existing.data??{},'catalog_key_v2')&&existing.data.catalog_key_v2!==key)fail({message:'체라의 기존 확장 등록 표식과 충돌합니다. 사용자 값을 덮어쓰지 않습니다.',id:existing.id},409);
+          if(existing.data?.generation_id!==generation.id||!catalogMarkerMatches(existing,spec.number,name)) {
             if(existing.deleted_at)fail({message:'보관된 체라 타이틀의 이동은 기존 기록을 확인한 뒤 진행하세요.',id:existing.id},409);
             const oldGeneration=resultGenerations.find(row=>row.data.number===2);
             if(existing.data?.generation_id&&existing.data.generation_id!==oldGeneration.id&&existing.data.generation_id!==generation.id)fail({message:'체라의 소속 세대가 예상과 다릅니다. 사용자 설정을 덮어쓰지 않습니다.',id:existing.id},409);
-            title=store.update('entities',existing.id,{sort_order:index,data:{...existing.data,generation_id:generation.id,catalog_key:key}},'체라 3세대 이동 전');updated_ids.push(title.id);
+            title=store.update('entities',existing.id,{sort_order:index,data:{...existing.data,generation_id:generation.id,catalog_key:catalogKey(2,'체라'),catalog_key_v2:key}},'체라 3세대 이동 전');updated_ids.push(title.id);
             moved_references.push(...moveTitleGenerationReferences(store,title.id,oldGeneration.id,generation.id));
           }
         }
@@ -163,11 +164,11 @@ export function reconcileCatalog(store) {
         if(matches.length>1)fail({message:`${name} 타이틀이 중복되었습니다. 기존 ID를 먼저 확인하세요.`,ids:matches.map(row=>row.id)},409);
         title=matches[0];
         if(title?.deleted_at)fail({message:`${name} 타이틀이 휴지통에 있습니다. 새 객체로 중복 등록하지 않습니다.`,id:title.id},409);
-        if(title){title=store.update('entities',title.id,{sort_order:index,data:{...title.data,catalog_key:key}},'본편 타이틀 순서 등록 전');updated_ids.push(title.id);}
+        if(title){title=store.update('entities',title.id,{sort_order:index,data:{...title.data,...(spec.number===3&&name==='체라'?{catalog_key:catalogKey(2,'체라'),catalog_key_v2:key}:{catalog_key:key})}},'본편 타이틀 순서 등록 전');updated_ids.push(title.id);}
         else {
           const unassigned=entities().filter(row=>active(row)&&row.kind==='title'&&!row.data?.generation_id&&normal(row.name)===normal(name));
           if(unassigned.length)fail({message:`${name}와 이름이 같은 미소속 타이틀이 있습니다. 세대 연결을 먼저 확인하세요.`,ids:unassigned.map(row=>row.id)},409);
-          title=store.create('entities',{kind:'title',name,sort_order:index,data:{generation_id:generation.id,catalog_key:key,status:'구상',time:{mode:'unknown'}}});created_ids.push(title.id);
+          title=store.create('entities',{kind:'title',name,sort_order:index,data:{generation_id:generation.id,...(spec.number===3&&name==='체라'?{catalog_key:catalogKey(2,'체라'),catalog_key_v2:key}:{catalog_key:key}),status:'구상',time:{mode:'unknown'}}});created_ids.push(title.id);
         }
       }
       resultTitles.push(title);

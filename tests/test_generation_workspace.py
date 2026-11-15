@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from myth.app import create_app
-from myth.main_workspace import generation_ids_for_entity
+from myth.main_workspace import generation_ids_for_entity, catalog_status
 
 
 class GenerationWorkspaceTests(unittest.TestCase):
@@ -49,7 +49,8 @@ class GenerationWorkspaceTests(unittest.TestCase):
         moved = self.row("entities", title["id"])
         self.assertEqual(moved["id"], "existing-chera")
         self.assertEqual(moved["data"]["generation_id"], "generation-undecided")
-        self.assertEqual(moved["data"]["catalog_key"], "title:3:체라")
+        self.assertEqual(moved["data"]["catalog_key"], "title:2:체라")
+        self.assertEqual(moved["data"]["catalog_key_v2"], "title:3:체라")
         self.assertEqual(moved["description"], title["description"])
         self.assertEqual(moved["data"]["synopsis"], title["data"]["synopsis"])
         self.assertEqual(self.row("relations", relation["id"]), relation)
@@ -89,6 +90,39 @@ class GenerationWorkspaceTests(unittest.TestCase):
             after = other.get("/api/state").json()
             for table in ("entities", "relations", "documents", "versions"):
                 self.assertEqual(after[table], baseline[table])
+
+    def test_chera_dual_markers_support_legacy_lookup_and_repair_partial_migration(self):
+        catalog = self.req("POST", "/api/catalog/reconcile", {})
+        chera = next(row for row in catalog["titles"] if row["name"] == "체라")
+        self.assertEqual(chera["data"]["generation_id"], "generation-undecided")
+        self.assertEqual(chera["data"]["catalog_key"], "title:2:체라")
+        self.assertEqual(chera["data"]["catalog_key_v2"], "title:3:체라")
+        # v8 looks for this legacy marker independently of generation_id.
+        legacy_lookup = [r for r in self.state()["entities"] if r.get("kind") == "title" and r.get("data", {}).get("catalog_key") == "title:2:체라"]
+        self.assertEqual([r["id"] for r in legacy_lookup], [chera["id"]])
+        partial = self.req("PATCH", "/api/entities/" + chera["id"], {"data": {**chera["data"], "catalog_key": "title:3:체라"}})
+        self.assertTrue(catalog_status(self.state()["entities"])["needsSetup"])
+        self.req("POST", "/api/workspace/upgrade-generation-model", {})
+        repaired = self.row("entities", chera["id"])
+        self.assertEqual(repaired["data"]["catalog_key"], "title:2:체라")
+        self.assertEqual(repaired["data"]["catalog_key_v2"], "title:3:체라")
+        self.assertEqual(repaired["data"]["generation_id"], "generation-undecided")
+        self.assertTrue(any(r["target_id"] == chera["id"] and r["snapshot"]["data"].get("catalog_key") == partial["data"]["catalog_key"] for r in self.state()["versions"]))
+        self.req("PATCH", "/api/entities/" + chera["id"], {"name": "[TEST] renamed by user"})
+        self.req("DELETE", "/api/entities/" + chera["id"])
+        before = self.stable()
+        self.assertTrue(self.req("POST", "/api/catalog/reconcile", {})["unchanged"])
+        self.assertEqual(self.stable(), before)
+        self.assertTrue(self.row("entities", chera["id"])["deleted_at"])
+
+    def test_chera_custom_v2_marker_conflicts_are_never_overwritten(self):
+        chera = self.req("POST", "/api/entities", {"kind": "title", "name": "체라", "data": {"generation_id": "generation-universe", "catalog_key": "title:2:체라"}})
+        for custom in (None, "[TEST] user extension", {"keep": True}):
+            with self.subTest(custom=custom):
+                chera = self.req("PATCH", "/api/entities/" + chera["id"], {"data": {**chera["data"], "catalog_key_v2": custom}})
+                before = self.stable()
+                self.assertEqual(self.client.post("/api/workspace/upgrade-generation-model", json={}).status_code, 409)
+                self.assertEqual(self.stable(), before)
 
     def test_generation_profiles_detach_restore_independently_and_revisions_guard_writes(self):
         self.req("POST", "/api/workspace/upgrade-generation-model", {})

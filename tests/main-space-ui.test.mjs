@@ -93,6 +93,7 @@ function readyState(){
     const id='g'+generation.number;entities.push({id,kind:'generation',name:generation.name,data:{number:generation.number,catalog_key:catalogKey(generation.number)}});
     generation.titles.forEach((name,index)=>entities.push({id:`t${generation.number}-${index}`,kind:'title',name,sort_order:index,data:{generation_id:id,catalog_key:catalogKey(generation.number,name)}}));
   }
+  const chera=entities.find(e=>e.kind==='title'&&e.name==='체라');Object.assign(chera.data,{catalog_key:catalogKey(2,'체라'),catalog_key_v2:catalogKey(3,'체라')});
   entities.push({id:'planet',kind:'planet',name:'기존 출신 행성',data:{}});
   return {entities,relations:[],groups:[],memberships:[],states:[],documents:[],chapters:[],versions:[],meta:{}};
 }

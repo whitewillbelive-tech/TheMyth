@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleApi } from '../sites/api.js';
 import { Fixture, collections } from './d1-test-helper.mjs';
-import { CATALOG, catalogKey, generationAppearanceFor, generationAppearancesFor, generationIdsForCharacter, workspaceUpgradeStatus, matchesTitleScope } from '../web/main-domain.js';
+import { CATALOG, catalogKey, catalogStatus, generationAppearanceFor, generationAppearancesFor, generationIdsForCharacter, workspaceUpgradeStatus, matchesTitleScope } from '../web/main-domain.js';
 
 function scenario(name,run){test(name,async t=>{const f=new Fixture(handleApi);t.after(()=>f.close());let r2=0;f.env.BUCKET.put=async()=>{r2++;throw Error('No R2 writes are allowed in this suite');};f.env.BUCKET.delete=async()=>{r2++;throw Error('No R2 deletes are allowed');};await run(f);assert.equal(r2,0);});}
 const copyRecords=state=>Object.fromEntries(collections.map(key=>[key,state[key]]));
@@ -28,7 +28,7 @@ scenario('generation upgrade moves Chera in place and preserves legacy profiles,
   const result=await upgrade(f),after=await f.state();
   assert.equal(result.catalog.titles.filter(t=>t.name==='체라').length,1);
   const moved=after.entities.find(x=>x.id===title.id);
-  assert.equal(moved.data.generation_id,generations[2].id);assert.equal(moved.data.catalog_key,catalogKey(3,'체라'));
+  assert.equal(moved.data.generation_id,generations[2].id);assert.equal(moved.data.catalog_key,catalogKey(2,'체라'));assert.equal(moved.data.catalog_key_v2,catalogKey(3,'체라'));
   assert.equal(moved.description,title.description);assert.deepEqual(moved.data.extension,title.data.extension);assert.deepEqual(moved.data.synopsis,title.data.synopsis);
   assert.deepEqual(after.relations.find(x=>x.id===appearance.id),appearance,'title-specific data must remain byte-for-byte intact');
   assert.equal(after.entities.find(x=>x.id===event.id).data.generation_id,generations[2].id);
@@ -124,4 +124,39 @@ scenario('generation affiliation references participate in existing merge impact
   const after=generationAppearanceFor(await f.state(),created.character.id,generation.id);
   assert.deepEqual(after.data.affiliations,[{collection:'entities',id:target.id}]);assert.equal(after.data.narrative,'소속이 있는 서사');
   assert.ok((await f.state()).versions.some(version=>version.target_id===relation.id&&version.snapshot.data.affiliations.some(ref=>ref.id===source.id)));
+});
+
+// v8 treats catalog markers independently of a title's actual generation. The
+// canonical v2 marker must coexist with that old key so an old client neither
+// reseeds Chera nor silently moves it back while the version is rolled back.
+const legacyV8CatalogInitialized=state=>[
+  ...[1,2,3].map(number=>({kind:'generation',key:catalogKey(number)})),
+  ...['위버멘쉬','마몬','아나키','랑데부'].map(name=>({kind:'title',key:catalogKey(1,name)})),
+  ...['올쳐','브이젯','흑과 백의 서신','영웅과 용사의 길','체라','월계 전쟁'].map(name=>({kind:'title',key:catalogKey(2,name)})),
+].every(spec=>state.entities.some(row=>row.kind===spec.kind&&row.data?.catalog_key===spec.key));
+
+scenario('migrated and fresh Chera remain initialized for v8 readers while canonical generation and markers repair in place',async f=>{
+  const original=await legacy(f);await upgrade(f);let state=await f.state();
+  assert.equal(legacyV8CatalogInitialized(state),true);assert.equal(catalogStatus(state).initialized,true);
+  const moved=state.entities.find(row=>row.id===original.title.id);
+  assert.equal(moved.data.catalog_key,catalogKey(2,'체라'));assert.equal(moved.data.catalog_key_v2,catalogKey(3,'체라'));
+  let partial=await f.update('entities',moved,{data:{...moved.data,catalog_key:catalogKey(3,'체라')}});
+  assert.equal(workspaceUpgradeStatus(await f.state()).needsUpgrade,true,'missing legacy marker requires rollback-safe repair');
+  await upgrade(f);state=await f.state();assert.equal(legacyV8CatalogInitialized(state),true);assert.equal(state.entities.filter(row=>row.name==='체라').length,1);
+  partial=await f.record('entities',original.title.id);
+  await f.update('entities',partial,{data:{...partial.data,generation_id:original.generations[1].id}});
+  assert.equal(workspaceUpgradeStatus(await f.state()).needsUpgrade,true,'canonical marker with wrong physical generation is not initialized');
+  await upgrade(f);const restored=await f.record('entities',original.title.id);
+  assert.equal(restored.data.generation_id,original.generations[2].id);assert.equal(restored.id,original.title.id);
+  const fresh=new Fixture(handleApi);
+  try{await catalog(fresh);const freshState=await fresh.state();assert.equal(legacyV8CatalogInitialized(freshState),true);assert.equal(catalogStatus(freshState).initialized,true);const chera=freshState.entities.find(row=>row.name==='체라');assert.equal(chera.data.catalog_key,catalogKey(2,'체라'));assert.equal(chera.data.catalog_key_v2,catalogKey(3,'체라'));}finally{fresh.close();}
+});
+
+scenario('an existing custom canonical-marker field is never overwritten by the Chera upgrade',async f=>{
+  const {title}=await legacy(f);
+  await f.update('entities',title,{data:{...title.data,catalog_key_v2:'사용자가 미리 저장한 다른 값'}});
+  const before=copyRecords(await f.state());
+  await f.error('POST','/api/workspace/upgrade-generation-model',{},409);
+  assert.deepEqual(copyRecords(await f.state()),before);
+  assert.equal((await f.record('entities',title.id)).data.catalog_key_v2,'사용자가 미리 저장한 다른 값');
 });

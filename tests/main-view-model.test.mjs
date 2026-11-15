@@ -185,6 +185,7 @@ test('top generation navigation keeps event titles local, restores the workspace
       if(!title){title={id:`catalog-${spec.number}-${index}`,kind:'title',name,data:{generation_id:generation.id}};fixture.entities.push(title);}
       title.sort_order=index;
       title.data.catalog_key=catalogKey(spec.number,name);
+      if(spec.number===3&&name==='체라')Object.assign(title.data,{catalog_key:catalogKey(2,name),catalog_key_v2:catalogKey(3,name)});
     }
   }
   fixture.entities.find(e=>e.id==='person').data.generation_model_version=1;

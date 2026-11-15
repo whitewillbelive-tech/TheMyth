@@ -34,6 +34,13 @@ def catalog_key(number, title=None):
     return f"generation:{number}" if title is None else f"title:{number}:{title}"
 
 
+def catalog_marker_matches(row, number, title):
+    data = row.get("data", {})
+    if number == 3 and title == "체라":
+        return data.get("catalog_key") == catalog_key(2, "체라") and data.get("catalog_key_v2") == catalog_key(3, "체라")
+    return data.get("catalog_key") == catalog_key(number, title)
+
+
 def catalog_status(records):
     missing, conflicts = [], []
     for number, _, titles in CATALOG:
@@ -47,10 +54,12 @@ def catalog_status(records):
             conflicts.append(f"{number}세대 객체가 여러 개입니다. 기존 ID를 먼저 확인하세요.")
         for title in titles:
             key = catalog_key(number, title)
-            found = [row for row in records if row.get("kind") == "title" and row.get("data", {}).get("catalog_key") == key]
+            found = [row for row in records if row.get("kind") == "title" and catalog_marker_matches(row, number, title)]
             if len(found) > 1:
                 conflicts.append(f"{title}의 등록 표식이 중복되었습니다.")
-            if not found:
+            expected_generation = tagged[0] if tagged else next((row for row in records if row.get("kind") == "generation" and row.get("data", {}).get("number") == number), None)
+            invalid_chera = number == 3 and title == "체라" and found and (found[0].get("data", {}).get("catalog_key") != catalog_key(2, "체라") or not expected_generation or found[0].get("data", {}).get("generation_id") != expected_generation["id"])
+            if not found or invalid_chera:
                 missing.append(key)
     return {"initialized": not missing and not conflicts, "needsSetup": bool(missing), "missing": missing, "conflicts": conflicts}
 
@@ -126,21 +135,24 @@ def reconcile_catalog(store, db):
         for index, title_name in enumerate(names):
             key = catalog_key(number, title_name)
             records = store.all(db, "entities")
-            tagged = [row for row in records if row.get("kind") == "title" and row.get("data", {}).get("catalog_key") == key]
+            tagged = [row for row in records if row.get("kind") == "title" and catalog_marker_matches(row, number, title_name)]
             if number == 3 and title_name == "체라":
-                candidates = [row for row in records if row.get("kind") == "title" and (row.get("data", {}).get("catalog_key") in {catalog_key(2, "체라"), key} or normal(row.get("name")) == "체라")]
+                candidates = [row for row in records if row.get("kind") == "title" and (row.get("data", {}).get("catalog_key") in (catalog_key(2, "체라"), key) or row.get("data", {}).get("catalog_key_v2") == key or normal(row.get("name")) == "체라")]
                 if len(candidates) > 1:
                     fail({"message": "체라 타이틀이 여러 개입니다. 기존 ID를 먼저 확인하세요.", "ids": [row["id"] for row in candidates]}, 409)
                 if candidates:
                     old = candidates[0]
-                    already_moved = old.get("data", {}).get("catalog_key") == key and old.get("data", {}).get("generation_id") == generation["id"]
+                    old_data = old.get("data", {})
+                    if "catalog_key_v2" in old_data and old_data["catalog_key_v2"] != key:
+                        fail({"message": "체라의 새 등록 표식이 사용자 값과 충돌합니다. 원문을 보존하고 이전을 중단합니다.", "id": old["id"]}, 409)
+                    already_moved = old_data.get("catalog_key") == catalog_key(2, "체라") and old_data.get("catalog_key_v2") == key and old_data.get("generation_id") == generation["id"]
                     if already_moved:
                         titles.append(old)
                         continue
                     if old.get("deleted_at"):
                         fail("기존 체라 타이틀이 휴지통에 있습니다. 자동으로 복원하거나 재생성하지 않습니다.", 409)
                     old_generation = old.get("data", {}).get("generation_id")
-                    title = store.update(db, "entities", old["id"], {"sort_order": index, "data": {**old.get("data", {}), "generation_id": generation["id"], "catalog_key": key}}, "체라 3세대 이전 전")
+                    title = store.update(db, "entities", old["id"], {"sort_order": index, "data": {**old_data, "generation_id": generation["id"], "catalog_key": catalog_key(2, "체라"), "catalog_key_v2": key}}, "체라 3세대 이전 전")
                     updated.append(title["id"])
                     moved_references.extend(_move_chera_references(store, db, title["id"], old_generation, generation["id"]))
                     titles.append(title)
@@ -162,7 +174,8 @@ def reconcile_catalog(store, db):
                     unassigned = [row for row in records if row.get("kind") == "title" and not row.get("deleted_at") and not row.get("data", {}).get("generation_id") and normal(row.get("name")) == normal(title_name)]
                     if unassigned:
                         fail("같은 이름의 미소속 타이틀이 있습니다. 기존 세대 연결을 먼저 확인하세요.", 409)
-                    title = store.create(db, "entities", {"kind": "title", "name": title_name, "sort_order": index, "data": {"generation_id": generation["id"], "catalog_key": key, "status": "구상", "time": {"mode": "unknown"}}})
+                    markers = {"catalog_key": catalog_key(2, "체라"), "catalog_key_v2": key} if number == 3 and title_name == "체라" else {"catalog_key": key}
+                    title = store.create(db, "entities", {"kind": "title", "name": title_name, "sort_order": index, "data": {"generation_id": generation["id"], **markers, "status": "구상", "time": {"mode": "unknown"}}})
                     created.append(title["id"])
             titles.append(title)
     return {"generations": generations, "titles": titles, "created_ids": created, "updated_ids": updated, "moved_references": moved_references, "unchanged": not created and not updated and not moved_references, "catalog": catalog_status(store.all(db, "entities"))}
