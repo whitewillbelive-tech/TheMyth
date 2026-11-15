@@ -3240,13 +3240,25 @@ dialog::backdrop {
 .space-tree-row > .list-row { flex:1; min-width:0; border-bottom:0; }
 .space-tree-row > .button { flex:none; margin-right:10px; padding:6px 8px; white-space:nowrap; }
 /* Generation workspaces */
-.topbar { flex-wrap:wrap; }
-.generation-top-tabs { width:100%; display:flex; align-items:stretch; gap:24px; border-bottom:1px solid var(--line); }
-.top-generation-tabs { display:flex; gap:8px; }
-.top-generation-tabs > button { display:flex; align-items:center; gap:9px; }
+.topbar { height:auto; min-height:90px; flex-wrap:nowrap; align-items:stretch; }
+.generation-top-tabs { width:100%; min-width:0; display:grid; grid-template-columns:minmax(0,3fr) minmax(115px,1fr); align-items:stretch; gap:24px; }
+.top-generation-tabs { min-width:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.top-generation-tabs > button { min-width:0; width:100%; display:flex; align-items:center; justify-content:center; gap:9px; padding:22px 12px; }
 .top-generation-tabs small { font-size:11px; opacity:.7; }
-.generation-top-tabs .writing-area-tab { margin-left:auto; padding-left:28px; border-left:1px solid var(--line); }
-.topbar > .header-tools { width:100%; justify-content:flex-end; padding-top:9px; }
+.generation-top-tabs .writing-area-tab { min-width:0; margin:0; padding:22px 12px; border-left:1px solid var(--line); }
+.auxiliary-functions { color:#bdcbbd; }
+.auxiliary-functions > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 0; list-style:none; cursor:pointer; font-size:11px; color:#b6c6b5; }
+.auxiliary-functions > summary::-webkit-details-marker { display:none; }
+.auxiliary-functions > summary::after { content:"＋"; color:#91a795; }
+.auxiliary-functions[open] > summary::after { content:"−"; }
+.auxiliary-function-list { display:grid; gap:3px; padding:6px 0 4px; }
+.auxiliary-function-list > button { display:flex; align-items:center; gap:7px; width:100%; min-width:0; margin:0; padding:7px 4px; text-align:left; border:0; background:transparent; color:inherit; font-size:11px; line-height:1.6; }
+.auxiliary-function-list > button span { margin-left:auto; color:#91a795; font-size:9px; }
+.auxiliary-function-list .context-common { display:flex; align-items:flex-start; gap:7px; margin:7px 0; color:#a9bcac; font-size:10px; line-height:1.7; }
+.auxiliary-function-list .context-common input { flex:none; margin-top:3px; }
+.auxiliary-functions .conflict { min-width:0; padding:8px; color:#e6cc91; background:#ffffff08; font-size:10px; line-height:1.7; overflow-wrap:anywhere; }
+.auxiliary-status.save-state { margin-left:0; padding-top:9px; color:#91a795; font-size:9px; white-space:normal; line-height:1.6; }
+.auxiliary-status.save-state.dirty { color:#dfc383; }
 .generation-common-layout { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:24px; align-items:start; }
 .generation-mbti-panel { padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--surface,#fff); }
 .generation-mbti-heading,.generation-mbti-label,.generation-mbti-controls { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -3287,14 +3299,24 @@ dialog::backdrop {
 @media(max-width:800px) {
  .generation-common-layout,.generation-draft-comparison { grid-template-columns:1fr; }
  .generation-mbti-panel { max-width:100%; }
- .generation-top-tabs { gap:8px; overflow:auto; }
+ .topbar { min-height:78px; }
+ .generation-top-tabs { grid-template-columns:minmax(0,3fr) minmax(88px,1fr); gap:8px; }
  .top-generation-tabs { gap:0; }
- .top-generation-tabs > button { flex-direction:column; gap:2px; padding:12px 10px; white-space:nowrap; }
- .generation-top-tabs .writing-area-tab { padding:10px; white-space:nowrap; font-size:12px; }
+ .top-generation-tabs > button { flex-direction:column; gap:3px; padding:15px 5px; white-space:nowrap; }
+ .top-generation-tabs small { font-size:10px; }
+ .generation-top-tabs .writing-area-tab { padding:15px 8px; white-space:normal; overflow-wrap:anywhere; font-size:12px; }
  .atlas-workspace.atlas-maximized .atlas-layout { grid-template-columns:1fr; }
  .atlas-workspace.atlas-maximized .atlas-list { max-height:40dvh; }
  .atlas-workspace.atlas-maximized .atlas-view canvas,.atlas-workspace.atlas-maximized .city-map-svg { height:55dvh; }
  .generation-character-panel { padding:14px; }
+}
+@media(max-width:680px) {
+ .sidebar .side-footer { display:block; margin-top:0; padding:3px 0 10px; }
+ .auxiliary-functions > summary { padding:7px 10px; }
+ .auxiliary-function-list { grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px 10px; padding:5px 6px; }
+ .auxiliary-function-list > button { padding:7px 4px; }
+ .auxiliary-function-list > label,.auxiliary-function-list > .conflict { grid-column:1 / -1; }
+ .auxiliary-status.save-state { padding:3px 10px 0; }
 }
 .appearance-section { padding:16px 0; border-bottom:1px solid var(--line); }
 .appearance-section .section-title { flex-wrap:wrap; }

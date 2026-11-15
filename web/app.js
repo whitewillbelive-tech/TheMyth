@@ -279,11 +279,11 @@ function mainNavigation() {
     ? `<button type="button" data-action="toggle-background" aria-expanded="${!!ui.backgroundOpen}" aria-controls="background-navigation" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}<span class="nav-chevron">${ui.backgroundOpen ? "⌃" : "⌄"}</span></button><div id="background-navigation" class="background-navigation" ${ui.backgroundOpen ? "" : "hidden"}>${[["spaces","공간"],["setting","설정"],["timeline","통합 연대기"]].map(([id,label])=>`<button type="button" data-action="view" data-id="${id}" class="${ui.view === id || id === "spaces" && ui.view === "atlas" ? "active" : ""}">${label}</button>`).join("")}</div>`
     : `<button type="button" data-action="view" data-id="${view}" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}</button>`).join("");
 }
-function commonSelection() {
-  if (["spaces","atlas"].includes(ui.view)) return "";
-  const status=workspaceUpgradeStatus(db), generation=lookup(ui.mainGeneration);
-  const common=["setting","timeline","organization","civilization","groups"].includes(ui.view);
-  return '<section class="main-context" aria-label="현재 세대 작업 영역"><div class="main-context-top"><span class="context-note">'+h(generation?.name || '')+' 작업 영역</span><div class="actions">'+(ui.view==="character"?button("전체 인물 · 공통 자료","view","all-characters","ghost small"):"")+button("세대·타이틀 관리","view","generations","ghost small")+'</div></div>'+(common?'<label class="context-common"><input id="main-common-toggle" type="checkbox" '+(ui.includeCommon?'checked':'')+'> 세대에 연결되지 않은 공통 자료도 보기</label>':'')+(status.needsUpgrade?'<div class="catalog-setup"><p>기존 ID와 작품별 기록을 보존하며 세대별 작업 구조를 준비합니다.</p>'+button("세대 자료 적용","setup-catalog","","small primary")+'</div>':'')+(status.catalog?.conflicts?.length?'<p class="conflict">'+status.catalog.conflicts.map(h).join("<br>")+'</p>':'')+'</section>';
+function auxiliaryFunctions() {
+  const status=workspaceUpgradeStatus(db);
+  const common=ui.tab==="main" && ["setting","timeline","organization","civilization","groups"].includes(ui.view);
+  const deleted=db.entities.filter(x=>x.deleted_at).length+db.documents.filter(x=>x.deleted_at).length;
+  return '<details class="auxiliary-functions"><summary>부가 기능</summary><div class="auxiliary-function-list">'+button("전체 인물 · 공통 자료","view","all-characters","ghost small")+button("세대·타이틀 관리","view","generations","ghost small")+(common?'<label class="context-common"><input id="main-common-toggle" type="checkbox" '+(ui.includeCommon?'checked':'')+'> 공통 자료도 보기</label>':'')+(status.needsUpgrade?button("세대 자료 적용","setup-catalog","","ghost small"):'')+(status.catalog?.conflicts?.length?'<p class="conflict">'+status.catalog.conflicts.map(h).join("<br>")+'</p>':'')+button("휴지통 · "+deleted,"view","trash","ghost small")+button("백업 및 복원","backup","","ghost small")+'</div></details><span class="save-state auxiliary-status">'+h(saveStatus)+'</span>';
 }
 
 function peopleNavigation() {
@@ -297,7 +297,7 @@ function topGenerationTabs() {
 
 function shell() {
   const nav = ui.tab === "main" ? mainNavigation() : writeNav.map(([v,i,n])=>`<button type="button" data-action="view" data-id="${v}" class="${ui.view===v?"active":""}"><span class="nav-icon">${i}</span>${n}</button>`).join("");
-  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>The Myth</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav" aria-label="${ui.tab === "main" ? "본편 주메뉴" : "외전과 사상집 메뉴"}">${nav}</nav><div class="side-footer"><span class="side-caption">WORKSPACE</span><button data-action="view" data-id="trash">♲ 휴지통 <span>${db.entities.filter((x) => x.deleted_at).length + db.documents.filter((x) => x.deleted_at).length}</span></button><button data-action="backup">↗ 백업 및 복원</button><p>하나의 우주, 이어지는 이야기.<br><span>당신의 세계를 기록하는 곳</span></p></div></aside><main class="workspace"><header class="topbar">${topGenerationTabs()}<div class="header-tools"><label class="global-search"><span>⌕</span><input id="global-search" aria-label="통합 검색" placeholder="세계관 전체에서 검색" value="${h(ui.query)}"><kbd>↵</kbd></label><span class="save-state">${h(saveStatus)}</span><button class="mobile-backup button ghost small" data-action="backup" aria-label="백업 및 복원">↗</button></div></header>${ui.tab === "main" ? commonSelection() : ""}<div id="page" class="content"></div><footer class="workspace-footer"><span>The Myth · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
+  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>The Myth</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav" aria-label="${ui.tab === "main" ? "본편 주메뉴" : "외전과 사상집 메뉴"}">${nav}</nav><div class="side-footer">${auxiliaryFunctions()}</div></aside><main class="workspace"><header class="topbar">${topGenerationTabs()}</header><div id="page" class="content"></div><footer class="workspace-footer"><span>The Myth · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
 }
 function header(eyebrow, title, subtitle, actions = "") {
   return `<div class="page-header"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="subtitle">${subtitle}</p></div><div class="actions">${actions}</div></div>`;
@@ -1571,19 +1571,7 @@ function bindForms() {
       $("#list-search").focus();
       $("#list-search").setSelectionRange(start, start);
     };
-  const global = $("#global-search");
-  if (global)
-    global.onkeydown = safe(async (ev) => {
-      if (ev.key === "Enter") {
-        const query = global.value;
-        await changeView("archive", "main");
-        ui.query = query;
-        ui.kind = "";
-        ui.title = "";
-        ui.group = "";
-        render();
-      }
-    });
+
 }
 function profileRaw(form) { return captureFormFields(form); }
 function restoreProfileRaw(form, raw) { restoreFormFields(form,raw); }
@@ -2108,10 +2096,6 @@ document.addEventListener(
       else if ($("#manuscript")) await saveManuscript();
       else if ($("#entity-form")) $("#entity-form").requestSubmit();
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") {
-      ev.preventDefault();
-      $("#global-search")?.focus();
-    }
   }),
 );
 window.addEventListener("beforeunload", (ev) => {
@@ -2137,7 +2121,7 @@ try {
         try { await refresh(false); } catch {}
       }
       const current=workspaceUpgradeStatus(db);
-      if(current.needsUpgrade || current.catalog.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 상단 등록 버튼으로 다시 확인할 수 있습니다. " + error.message;
+      if(current.needsUpgrade || current.catalog.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 좌하단 부가 기능에서 다시 확인할 수 있습니다. " + error.message;
     }
   }
   render();
