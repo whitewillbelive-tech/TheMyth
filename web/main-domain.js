@@ -2,8 +2,8 @@
 // records, infer world facts, or duplicate a character for a title.
 export const CATALOG = Object.freeze([
   { number: 1, name: 'Earth', titles: ['위버멘쉬', '마몬', '아나키', '랑데부'] },
-  { number: 2, name: 'Universe', titles: ['올쳐', '브이젯', '흑과 백의 서신', '영웅과 용사의 길', '체라', '월계 전쟁'] },
-  { number: 3, name: 'Heaven', titles: [] },
+  { number: 2, name: 'Universe', titles: ['올쳐', '브이젯', '흑과 백의 서신', '영웅과 용사의 길', '월계 전쟁'] },
+  { number: 3, name: 'Heaven', titles: ['체라'] },
 ]);
 
 export const PROFILE_FIELDS = Object.freeze([
@@ -41,6 +41,49 @@ export function titlesForGeneration(state, generationId) {
 export function generationForTitle(state, titleId) {
   const title = entity(state, titleId);
   return title?.kind === 'title' ? entity(state, title.data?.generation_id) ?? null : null;
+}
+export function generationAppearanceId(state, relation, characterId = null) {
+  if (relation?.type !== 'generation_appearance') return null;
+  const a = entity(state, relation.source_id), b = entity(state, relation.target_id);
+  if (a?.kind === 'character' && b?.kind === 'generation' && (!characterId || a.id === characterId)) return b.id;
+  if (b?.kind === 'character' && a?.kind === 'generation' && (!characterId || b.id === characterId)) return a.id;
+  return null;
+}
+export function generationAppearancesFor(state, characterId, { includeArchived = false } = {}) {
+  return rows(state, 'relations').filter(row => (includeArchived || active(row)) && generationAppearanceId(state,row,characterId)).sort(order);
+}
+export function generationAppearanceFor(state, characterId, generationId, options = {}) {
+  const found=generationAppearancesFor(state,characterId,options).filter(row=>generationAppearanceId(state,row,characterId)===generationId);
+  return found.length===1?found[0]:null;
+}
+export function generationIdsForCharacter(state, characterId) {
+  const character=entity(state,characterId), direct=generationAppearancesFor(state,characterId,{includeArchived:true});
+  if (character?.data?.generation_model_version===1 || direct.length) return [...new Set(direct.filter(active).map(row=>generationAppearanceId(state,row,characterId)))];
+  return [...new Set(appearancesFor(state,characterId).map(row=>generationForTitle(state,appearanceTitleId(state,row,characterId))?.id).filter(Boolean))];
+}
+export function generationIdsForEntity(state, item, visited = new Set()) {
+  if(!item || visited.has(item.id))return [];
+  visited.add(item.id);
+  if(item.kind==='character')return generationIdsForCharacter(state,item.id);
+  if(item.kind==='generation')return [item.id];
+  const result=new Set(titleIdsForEntity(state,item).map(id=>generationForTitle(state,id)?.id).filter(Boolean));
+  if(item.data?.generation_id)result.add(item.data.generation_id);
+  for(const id of item.data?.generation_ids??[])result.add(id);
+  for(const relation of rows(state,'relations').filter(active)) {
+    const id=generationAppearanceId(state,relation);
+    if(id && (relation.data?.affiliations??[]).some(ref=>ref.id===item.id))result.add(id);
+  }
+  if(rows(state,'groups').some(group=>group.id===item.id)) for(const membership of rows(state,'memberships').filter(active)) {
+    if(membership.group_id===item.id)for(const id of generationIdsForEntity(state,entity(state,membership.entity_id),visited))result.add(id);
+  }
+  if(['organization','civilization','space','planet'].includes(item.kind)) for(const character of rows(state,'entities').filter(row=>active(row)&&row.kind==='character')) {
+    if(character.data?.origin_planet_id===item.id || character.data?.civilization_id===item.id)for(const id of generationIdsForCharacter(state,character.id))result.add(id);
+  }
+  return [...result];
+}
+export function workspaceUpgradeStatus(state) {
+  const catalog=catalogStatus(state),pendingCharacterIds=rows(state,'entities').filter(row=>row.kind==='character'&&row.data?.generation_model_version!==1).map(row=>row.id);
+  return {needsUpgrade:catalog.needsSetup||pendingCharacterIds.length>0,pendingCharacterIds,catalog};
 }
 export function appearanceTitleId(state, appearance, characterId = null) {
   if (appearance?.type !== 'appearance') return null;
@@ -134,6 +177,10 @@ export function titleIdsForEntity(state, item, visited = new Set()) {
 }
 export function matchesTitleScope(state, item, { generationId = '', titleId = '', includeCommon = true } = {}) {
   if (!generationId && !titleId) return true;
+  if(generationId&&!titleId) {
+    const ids=generationIdsForEntity(state,item);
+    return ids.length?ids.includes(generationId):includeCommon;
+  }
   const ids = titleIdsForEntity(state, item);
   if (!ids.length) return includeCommon;
   if (titleId) return ids.includes(titleId);

@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,27 @@ WRITABLE = COLLECTIONS[:-1]
 KINDS = {"generation", "title", "character", "organization", "event", "space", "planet", "civilization", "setting", "thought", "thinker", "custom"}
 REFERENCE_KEYS = {"parent_id", "generation_id", "origin_planet_id", "civilization_id", "event_id", "author_id", "galaxy_master_id"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+
+# Direct local Store/CLI work is administrative. The HTTP adapter explicitly
+# marks ordinary browser/visitor requests read-only for protected spatial data.
+spatial_writes_allowed = ContextVar("myth_spatial_writes_allowed", default=True)
+
+
+def protected_spatial_state(state):
+    entities = [r for r in state.get("entities", []) if isinstance(r, dict)]
+    spatial = {r.get("id") for r in entities if r.get("kind") in ("space", "planet")}
+    sort = lambda rows: sorted(copy.deepcopy(rows), key=lambda r: str(r.get("id", "")))
+    return {
+        "entities": sort([r for r in entities if r.get("id") in spatial]),
+        "states": sort([r for r in state.get("states", []) if isinstance(r, dict) and r.get("entity_id") in spatial]),
+        "memberships": sort([r for r in state.get("memberships", []) if isinstance(r, dict) and r.get("entity_id") in spatial]),
+        "relations": sort([r for r in state.get("relations", []) if isinstance(r, dict) and r.get("source_id") in spatial and r.get("target_id") in spatial]),
+    }
+
+
+def assert_spatial_write(before, after):
+    if not spatial_writes_allowed.get() and protected_spatial_state(before) != protected_spatial_state(after):
+        fail("공간 데이터는 Site에서 변경할 수 없습니다. 공식 Work 관리 경로를 사용하세요.", 403)
 
 
 def now():
@@ -45,7 +67,7 @@ def valid_id(value):
 def references(value, target):
     """Only identifier-bearing fields count as references, not arbitrary prose."""
     if isinstance(value, dict):
-        return any((k.endswith("_id") and v == target) or (k.endswith("_ids") and isinstance(v, list) and target in v) or references(v, target) for k, v in value.items())
+        return (value.get("collection") in ("entities", "groups") and value.get("id") == target) or any((k.endswith("_id") and v == target) or (k.endswith("_ids") and isinstance(v, list) and target in v) or references(v, target) for k, v in value.items())
     if isinstance(value, list):
         return any(references(v, target) for v in value)
     return False
@@ -53,9 +75,19 @@ def references(value, target):
 
 def redirect(value, source, target):
     if isinstance(value, dict):
-        return {k: (target if k.endswith("_id") and v == source else list(dict.fromkeys(target if x == source else x for x in v)) if k.endswith("_ids") and isinstance(v, list) and all(isinstance(x, str) for x in v) else redirect(v, source, target)) for k, v in value.items()}
+        typed_ref = value.get("collection") in ("entities", "groups")
+        return {k: (target if (k.endswith("_id") or typed_ref and k == "id") and v == source else list(dict.fromkeys(target if x == source else x for x in v)) if k.endswith("_ids") and isinstance(v, list) and all(isinstance(x, str) for x in v) else redirect(v, source, target)) for k, v in value.items()}
     if isinstance(value, list):
-        return [redirect(v, source, target) for v in value]
+        result = [redirect(v, source, target) for v in value]
+        if result and all(isinstance(v, dict) and v.get("collection") in ("entities", "groups") and isinstance(v.get("id"), str) for v in result):
+            unique, seen = [], set()
+            for ref in result:
+                key = (ref["collection"], ref["id"])
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(ref)
+            return unique
+        return result
     return value
 
 
@@ -87,7 +119,10 @@ class Store:
             db = self.connect()
             try:
                 db.execute("BEGIN IMMEDIATE")
+                protected_before = self.state(db) if not spatial_writes_allowed.get() else None
                 yield db
+                if protected_before is not None:
+                    assert_spatial_write(protected_before, self.state(db))
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -521,6 +556,12 @@ class Store:
         with self.transaction() as db:
             previous = self.state(db)
             previous.update(format="the-myth-backup", format_version=1)
+            if not spatial_writes_allowed.get():
+                candidate = copy.deepcopy(backup)
+                if mode == "merge":
+                    candidate = {table: list({**{r["id"]: r for r in previous[table]}, **{r["id"]: r for r in backup[table] if isinstance(r, dict) and r.get("id")}}.values()) for table in COLLECTIONS}
+                # This check deliberately precedes the safety-copy file write.
+                assert_spatial_write(previous, candidate)
             # Write the safety copy outside the DB transaction before destructive import.
             folder = Path(self.path).parent / "backups"
             folder.mkdir(parents=True, exist_ok=True)

@@ -7,8 +7,9 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .store import Store, WRITABLE, fail, timeline
-from .main_workspace import create_character, reconcile_catalog, sync_appearances, update_title_settings
+from .store import Store, WRITABLE, fail, timeline, spatial_writes_allowed
+from .main_workspace import (create_character, reconcile_catalog, sync_appearances, update_title_settings,
+                             upgrade_generation_model, sync_generations, update_generation_settings, update_title_story)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +32,12 @@ def create_app(db_path=None):
             length = request.headers.get("content-length")
             if length and (not length.isdigit() or int(length) > 32 * 1024 * 1024):
                 return JSONResponse({"detail": "요청은 32 MiB 이하여야 합니다."}, status_code=413)
-        response = await call_next(request)
+        visitor_request = any(key.lower() == "origin" or key.lower().startswith(("sec-fetch-", "oai-authenticated-user-")) for key in request.headers)
+        permission = spatial_writes_allowed.set(not visitor_request)
+        try:
+            response = await call_next(request)
+        finally:
+            spatial_writes_allowed.reset(permission)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         if request.url.path.startswith("/api/"):
@@ -66,6 +72,26 @@ def create_app(db_path=None):
     def register_main_catalog(payload: dict = Body(default={})):
         with store.transaction() as db:
             return reconcile_catalog(store, db)
+
+    @app.post("/api/workspace/upgrade-generation-model")
+    def upgrade_workspace(payload: dict = Body(default={})):
+        with store.transaction() as db:
+            return upgrade_generation_model(store, db)
+
+    @app.post("/api/characters/{id}/generations")
+    def set_generations(id: str, payload: dict = Body(...)):
+        with store.transaction() as db:
+            return sync_generations(store, db, id, payload)
+
+    @app.patch("/api/characters/{id}/generation-settings/{generation_id}")
+    def set_generation_profile(id: str, generation_id: str, payload: dict = Body(...)):
+        with store.transaction() as db:
+            return update_generation_settings(store, db, id, generation_id, payload)
+
+    @app.patch("/api/titles/{id}/story")
+    def set_title_story(id: str, payload: dict = Body(...)):
+        with store.transaction() as db:
+            return update_title_story(store, db, id, payload)
 
     @app.post("/api/characters/{id}/appearances")
     def set_appearances(id: str, payload: dict = Body(...)):

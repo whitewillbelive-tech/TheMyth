@@ -1,5 +1,6 @@
 import { Store, WRITABLE, fail, validId } from './store.js';
-import { reconcileCatalog, createCharacter, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation } from './main-workspace.js';
+import { reconcileCatalog, createCharacter, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation, upgradeGenerationModel, setCharacterGenerations, updateGenerationSettings, updateTitleStory } from './main-workspace.js';
+import { spatialWritesAllowed } from './spatial-permissions.js';
 import { matchesTitleScope } from '../web/main-domain.js';
 
 const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin'};
@@ -66,7 +67,11 @@ export async function handleApi(request,env) {
       return new Response(saved.body,{headers:{...headers,'Content-Type':'application/json; charset=utf-8','Content-Disposition':`attachment; filename="${safetyMatch[1]}"`}});
     }
     const store=await Store.load(env);
+    store.spatialWritesAllowed=spatialWritesAllowed(request);
     if(path==='/api/state'&&method==='GET') return json(store.state());
+    if(path==='/api/workspace/upgrade-generation-model'&&method==='POST') {
+      await body(request);const result=upgradeGenerationModel(store);await store.commit();return json(result);
+    }
     if(path==='/api/catalog/reconcile'&&method==='POST') {
       await body(request);
       const result=reconcileCatalog(store); await store.commit(); return json(result);
@@ -77,6 +82,18 @@ export async function handleApi(request,env) {
     const appearanceMatch=path.match(/^\/api\/characters\/([^/]+)\/appearances$/);
     if(appearanceMatch&&method==='POST') {
       const result=setCharacterAppearances(store,pathId(appearanceMatch[1]),await body(request)); await store.commit(); return json(result);
+    }
+    const generationsMatch=path.match(/^\/api\/characters\/([^/]+)\/generations$/);
+    if(generationsMatch&&method==='POST') {
+      const result=setCharacterGenerations(store,pathId(generationsMatch[1]),await body(request));await store.commit();return json(result);
+    }
+    const generationSettingsMatch=path.match(/^\/api\/characters\/([^/]+)\/generation-settings\/([^/]+)$/);
+    if(generationSettingsMatch&&method==='PATCH') {
+      const result=updateGenerationSettings(store,pathId(generationSettingsMatch[1]),pathId(generationSettingsMatch[2]),await body(request));await store.commit();return json(result);
+    }
+    const titleStoryMatch=path.match(/^\/api\/titles\/([^/]+)\/story$/);
+    if(titleStoryMatch&&method==='PATCH') {
+      const result=updateTitleStory(store,pathId(titleStoryMatch[1]),await body(request));await store.commit();return json(result);
     }
     const settingsMatch=path.match(/^\/api\/characters\/([^/]+)\/title-settings\/([^/]+)$/);
     if(settingsMatch&&method==='PATCH') {
@@ -163,7 +180,7 @@ export function timeline(state, year = null, title_id = null, {generationId = nu
   }
   const scoped = !!title_id || !!generationId;
   const scope = {generationId:generationId??'',titleId:title_id??'',includeCommon};
-  const visibleEntity = id => matchesTitleScope(state,by_id.get(id),scope);
+  const visibleEntity = id => matchesTitleScope(state,by_id.get(id)??state.groups.find(row=>row.id===id)??state.documents.find(row=>row.id===id),scope);
   if(scoped) {
     states=states.filter(record=>visibleEntity(record.entity_id));
     relations=relations.filter(record=>{

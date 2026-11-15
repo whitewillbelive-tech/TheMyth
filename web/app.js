@@ -1,6 +1,9 @@
 import { mountAtlas } from "/atlas-view.js";
-import { generations as catalogGenerations, titlesForGeneration, generationForTitle, appearancesFor, appearanceFor, commonProfile, resolveTitleProfile, PROFILE_FIELDS, titleIdsForEntity, eventRelationWarnings, profileTimelineWarnings, catalogStatus } from "/main-domain.js";
+import { generations as catalogGenerations, titlesForGeneration, generationForTitle, appearancesFor, appearanceFor, commonProfile, resolveTitleProfile, PROFILE_FIELDS, titleIdsForEntity, eventRelationWarnings, profileTimelineWarnings, catalogStatus, workspaceUpgradeStatus, generationIdsForCharacter } from "/main-domain.js";
 import { normalizeMainContext, mainSection, contextForEntity, scopedEntities, withSpaceAncestors, detachedAppearances, hasAppearanceContent, scopedGroups, captureFormFields, restoreFormFields, titleSettingsPayload, appearanceSelectionPayload, timelineParameters } from "/main-view-model.js";
+
+import { renderGenerationCharacter, bindGenerationCharacter, newGenerationCharacter } from "/generation-characters.js";
+import { renderTitleTabs, renderTitleSynopsis, bindTitleSynopsis } from "/title-synopsis.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -21,7 +24,7 @@ const names = {
   space: "공간",
   planet: "행성",
   civilization: "문명",
-  setting: "세계관 설정",
+  setting: "설정",
   thought: "사상",
   thinker: "사상가",
   custom: "사용자 분류",
@@ -92,7 +95,7 @@ let ui = {
 };
 if (ui.tab === "main" && ui.view === "overview") ui.view = "character";
 let saveStatus = "모든 변경사항 저장됨";
-let disposeAtlas;
+let disposeAtlas, generationCharacterBinding, titleSynopsisBinding;
 let documentTimer,
   pendingWrite = Promise.resolve(),
   toastTimer;
@@ -263,7 +266,7 @@ function readTime(fd, p) {
   };
 }
 function mainContext() {
-  return { generationId: ui.mainGeneration, titleId: ui.mainTitle, includeCommon: ui.includeCommon };
+  return { generationId: ui.mainGeneration, titleId: ui.view === "event" ? ui.mainTitle : "", includeCommon: ui.includeCommon };
 }
 function setMainContext(context) {
   ui.mainGeneration = context.generationId;
@@ -273,21 +276,28 @@ function setMainContext(context) {
 function mainNavigation() {
   const section = mainSection(ui.view);
   return mainNav.map(([view, icon, name]) => view === "background"
-    ? `<button type="button" data-action="toggle-background" aria-expanded="${!!ui.backgroundOpen}" aria-controls="background-navigation" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}<span class="nav-chevron">${ui.backgroundOpen ? "⌃" : "⌄"}</span></button><div id="background-navigation" class="background-navigation" ${ui.backgroundOpen ? "" : "hidden"}>${[["spaces","공간"],["setting","세계관 설정"],["timeline","통합 연대기"]].map(([id,label])=>`<button type="button" data-action="view" data-id="${id}" class="${ui.view === id || id === "spaces" && ui.view === "atlas" ? "active" : ""}">${label}</button>`).join("")}</div>`
+    ? `<button type="button" data-action="toggle-background" aria-expanded="${!!ui.backgroundOpen}" aria-controls="background-navigation" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}<span class="nav-chevron">${ui.backgroundOpen ? "⌃" : "⌄"}</span></button><div id="background-navigation" class="background-navigation" ${ui.backgroundOpen ? "" : "hidden"}>${[["spaces","공간"],["setting","설정"],["timeline","통합 연대기"]].map(([id,label])=>`<button type="button" data-action="view" data-id="${id}" class="${ui.view === id || id === "spaces" && ui.view === "atlas" ? "active" : ""}">${label}</button>`).join("")}</div>`
     : `<button type="button" data-action="view" data-id="${view}" class="${section === view ? "active" : ""}"><span class="nav-icon">${icon}</span>${name}</button>`).join("");
 }
 function commonSelection() {
-  const gens = catalogGenerations(db), titles = titlesForGeneration(db, ui.mainGeneration), status = catalogStatus(db);
-  return `<section class="main-context" aria-label="본편 세대와 서브타이틀"><div class="main-context-top"><div class="generation-tabs" role="tablist" aria-label="세대">${gens.map(g=>`<button type="button" role="tab" aria-selected="${g.id === ui.mainGeneration}" data-action="select-generation" data-id="${g.id}"><strong>${h(g.data?.number || "")}세대</strong><span>${h(g.name)}</span></button>`).join("") || '<span class="muted">아직 등록된 세대가 없습니다.</span>'}</div>${button("세대·타이틀 관리", "view", "generations", "ghost small")}</div><div class="main-context-bottom"><label class="context-title"><span>서브타이틀</span><select id="main-title-select" aria-label="서브타이틀">${titles.length ? option("", "이 세대의 모든 타이틀", ui.mainTitle) + titles.map(t=>option(t.id,t.name,ui.mainTitle)).join("") : '<option value="">미정 · 확정된 타이틀 없음</option>'}</select></label>${["spaces","setting","timeline","atlas","organization","civilization","groups"].includes(ui.view) ? `<label class="context-common"><input id="main-common-toggle" type="checkbox" ${ui.includeCommon ? "checked" : ""}> 연결되지 않은 공통 자료도 보기</label>` : ""}<span class="context-note">선택은 본편 화면을 이동해도 유지됩니다.</span></div>${status.needsSetup ? `<div class="catalog-setup"><p>세대와 작품 목록을 준비할 수 있습니다. 기존 자료와 사용자 타이틀은 보존됩니다.</p>${button("초기 세대·타이틀 등록", "setup-catalog", "", "small primary")}</div>` : ""}${status.conflicts?.length ? `<p class="conflict">${status.conflicts.map(h).join("<br>")}</p>` : ""}</section>`;
+  if (["spaces","atlas"].includes(ui.view)) return "";
+  const status=workspaceUpgradeStatus(db), generation=lookup(ui.mainGeneration);
+  const common=["setting","timeline","organization","civilization","groups"].includes(ui.view);
+  return '<section class="main-context" aria-label="현재 세대 작업 영역"><div class="main-context-top"><span class="context-note">'+h(generation?.name || '')+' 작업 영역</span><div class="actions">'+(ui.view==="character"?button("전체 인물 · 공통 자료","view","all-characters","ghost small"):"")+button("세대·타이틀 관리","view","generations","ghost small")+'</div></div>'+(common?'<label class="context-common"><input id="main-common-toggle" type="checkbox" '+(ui.includeCommon?'checked':'')+'> 세대에 연결되지 않은 공통 자료도 보기</label>':'')+(status.needsUpgrade?'<div class="catalog-setup"><p>기존 ID와 작품별 기록을 보존하며 세대별 작업 구조를 준비합니다.</p>'+button("세대 자료 적용","setup-catalog","","small primary")+'</div>':'')+(status.catalog?.conflicts?.length?'<p class="conflict">'+status.catalog.conflicts.map(h).join("<br>")+'</p>':'')+'</section>';
 }
+
 function peopleNavigation() {
-  if (ui.tab !== "main" || !["character","organization","civilization","groups"].includes(ui.view)) return "";
-  const collective = ui.view !== "character";
+  if (ui.tab !== "main" || !["character","all-characters","organization","civilization","groups"].includes(ui.view)) return "";
+  const collective = !["character","all-characters"].includes(ui.view);
   return `<nav class="main-section-tabs" aria-label="인물 작업 영역">${button("인물 목록", "view", "character", !collective ? "active" : "ghost")}${button("집단·문명·그룹", "view", collective ? ui.view : "organization", collective ? "active" : "ghost")}</nav>${collective ? `<nav class="collective-tabs" aria-label="집단·문명·그룹 유형">${[["organization","집단"],["civilization","문명"],["groups","그룹"]].map(([id,name])=>button(name,"view",id,ui.view===id?"active":"ghost")).join("")}</nav>` : ""}`;
 }
+function topGenerationTabs() {
+ return '<nav class="top-tabs generation-top-tabs" aria-label="프로젝트 영역"><div class="top-generation-tabs" role="tablist" aria-label="세대">'+catalogGenerations(db).map(g=>'<button type="button" role="tab" data-action="select-generation" data-id="'+h(g.id)+'" aria-selected="'+(ui.tab==="main"&&ui.mainGeneration===g.id)+'" class="'+(ui.tab==="main"&&ui.mainGeneration===g.id?'active':'')+'"><strong>'+h(g.data?.number)+'세대</strong><small>'+h(g.name)+'</small></button>').join('')+'</div><button data-action="tab" data-id="writing" class="writing-area-tab '+(ui.tab==="writing"?'active':'')+'">외전+사상집</button></nav>';
+}
+
 function shell() {
   const nav = ui.tab === "main" ? mainNavigation() : writeNav.map(([v,i,n])=>`<button type="button" data-action="view" data-id="${v}" class="${ui.view===v?"active":""}"><span class="nav-icon">${i}</span>${n}</button>`).join("");
-  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>The Myth</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav" aria-label="${ui.tab === "main" ? "본편 주메뉴" : "외전과 사상집 메뉴"}">${nav}</nav><div class="side-footer"><span class="side-caption">WORKSPACE</span><button data-action="view" data-id="trash">♲ 휴지통 <span>${db.entities.filter((x) => x.deleted_at).length + db.documents.filter((x) => x.deleted_at).length}</span></button><button data-action="backup">↗ 백업 및 복원</button><p>하나의 우주, 이어지는 이야기.<br><span>당신의 세계를 기록하는 곳</span></p></div></aside><main class="workspace"><header class="topbar"><nav class="top-tabs" aria-label="프로젝트 영역"><button data-action="tab" data-id="main" class="${ui.tab === "main" ? "active" : ""}">본편</button><button data-action="tab" data-id="writing" class="${ui.tab === "writing" ? "active" : ""}">외전+사상집</button></nav><div class="header-tools"><label class="global-search"><span>⌕</span><input id="global-search" aria-label="통합 검색" placeholder="세계관 전체에서 검색" value="${h(ui.query)}"><kbd>↵</kbd></label><span class="save-state">${h(saveStatus)}</span><button class="mobile-backup button ghost small" data-action="backup" aria-label="백업 및 복원">↗</button></div></header>${ui.tab === "main" ? commonSelection() : ""}<div id="page" class="content"></div><footer class="workspace-footer"><span>The Myth · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
+  return `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">M</span><h1>The Myth</h1><small>WORLD & WORDS</small></a><div class="side-caption">${ui.tab === "main" ? "WORLD ARCHIVE" : "WRITING ROOM"}</div><nav class="side-nav" aria-label="${ui.tab === "main" ? "본편 주메뉴" : "외전과 사상집 메뉴"}">${nav}</nav><div class="side-footer"><span class="side-caption">WORKSPACE</span><button data-action="view" data-id="trash">♲ 휴지통 <span>${db.entities.filter((x) => x.deleted_at).length + db.documents.filter((x) => x.deleted_at).length}</span></button><button data-action="backup">↗ 백업 및 복원</button><p>하나의 우주, 이어지는 이야기.<br><span>당신의 세계를 기록하는 곳</span></p></div></aside><main class="workspace"><header class="topbar">${topGenerationTabs()}<div class="header-tools"><label class="global-search"><span>⌕</span><input id="global-search" aria-label="통합 검색" placeholder="세계관 전체에서 검색" value="${h(ui.query)}"><kbd>↵</kbd></label><span class="save-state">${h(saveStatus)}</span><button class="mobile-backup button ghost small" data-action="backup" aria-label="백업 및 복원">↗</button></div></header>${ui.tab === "main" ? commonSelection() : ""}<div id="page" class="content"></div><footer class="workspace-footer"><span>The Myth · 독립 창작 워크스테이션</span><span>우주 절대 연도 · 미확정 기록 지원</span></footer></main></div>`;
 }
 function header(eyebrow, title, subtitle, actions = "") {
   return `<div class="page-header"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="subtitle">${subtitle}</p></div><div class="actions">${actions}</div></div>`;
@@ -379,7 +389,7 @@ function searchDocuments() {
 }
 function entityList() {
   let list = active("entities");
-  if (ui.view === "character")
+  if (["character","all-characters"].includes(ui.view))
     list = list.filter((x) => x.kind === "character");
   else if (["organization","civilization"].includes(ui.view))
     list = list.filter((x) => x.kind === ui.view);
@@ -406,7 +416,7 @@ function entityList() {
     );
     list = list.filter((x) => ids.has(x.id));
   }
-  if (ui.tab === "main" && ui.view !== "generations") {
+  if (ui.tab === "main" && !["generations","all-characters","archive"].includes(ui.view)) {
     list = scopedEntities(db,list,mainContext(),{includeCommon:["character","event"].includes(ui.view) ? !ui.mainTitle && ui.includeCommon : ui.includeCommon});
     if (ui.view === "spaces") list = withSpaceAncestors(active("entities").filter(e=>["space","planet"].includes(e.kind)),list);
   }
@@ -429,10 +439,8 @@ function displaySpaceParent(e) {
   }
   return seen.has(id)?null:id;
 }
-function spatialChildButton(e, className="ghost small") {
-  const child=spatialType(e)==="galaxy"?"planet":spatialType(e)==="planet"?"city":null;
-  return child ? button("+ "+(child==="planet"?"행성":"도시"),"new-space",child+"|"+e.id,className) : "";
-}
+function spatialChildButton() { return ""; }
+
 function spaceParentField(e) {
   const level=spatialType(e), d=e.data || {};
   if(level==="galaxy") return e.id ? "" : '<input type="hidden" name="data_parent_id" value="">';
@@ -445,21 +453,22 @@ function spaceParentField(e) {
 }
 const viewTitle = {
   archive: "전체 아카이브",
+  "all-characters": "전체 인물 · 공통 자료",
   character: "인물",
   organization: "집단",
   civilization: "문명",
   event: "사건",
   spaces: "공간",
-  setting: "세계관 설정",
+  setting: "설정",
   generations: "세대와 타이틀",
   thought: "사상 아카이브",
   thinker: "사상가",
 };
 function archive() {
-  const list = entityList(), selected = db.entities.find(x=>x.id===ui.selected&&!x.deleted_at&&(ui.view!=="spaces"||spatialType(x)!=="universe"));
-  const kind=defaultKind(), creation=ui.view==="spaces" ? button("+ 은하","new-space","galaxy|","primary")+(selected?spatialChildButton(selected,"ghost"):"") : button("+ " + names[kind],"new-entity",kind,"primary");
+  const list = entityList(), selected = list.find(x=>x.id===ui.selected&&!x.deleted_at);
+  const kind=defaultKind(), creation=ui.view==="spaces" ? "" : button("+ " + names[kind],"new-entity",kind,"primary");
   const titleFilter = ui.tab === "main" ? "" : `<select id="title-filter" aria-label="타이틀 필터">${options(active("entities").filter(e=>e.kind==="title"),ui.title,"전체 타이틀")}</select>`;
-  return header(ui.tab==="main"?"WORLD ARCHIVE":"PHILOSOPHY ARCHIVE",viewTitle[ui.view]||"아카이브",ui.view==="spaces"?"은하 아래에 행성을, 행성 아래에 도시를 기록합니다.":ui.view==="thought"?"인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다.":ui.view==="generations"?"기존 ID를 유지하며 세대와 작품을 추가·편집·정렬합니다.":"하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",(ui.view==="spaces"?button("3D 지도","view","atlas","ghost"):"")+creation+(ui.view==="generations"?button("+ 세대","new-generation","","ghost"):"")) + `${ui.query?searchDocuments():""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("","모든 유형",ui.kind)}${Object.entries(names).map(([k,n])=>option(k,n,ui.kind)).join("")}</select>${titleFilter}<select id="group-filter" aria-label="그룹 필터">${options(active("groups"),ui.group,"전체 그룹")}</select>${ui.query||ui.kind||ui.group||ui.tab!=="main"&&ui.title?button("필터 초기화","clear-filter","","ghost small"):""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view==="spaces"?"공간 계층":"자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view==="spaces"&&!ui.query&&!ui.kind&&!ui.group?spaceTree(list):list.map(e=>listRow(e)).join("")||empty("자료가 없습니다","새 자료를 만들거나 선택한 세대와 타이틀을 바꿔보세요.")}</div></section><section class="detail-panel">${selected?entityDetail(selected):empty("기록을 선택하세요","왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.",ui.view==="spaces"?button("+ 은하 추가","new-space","galaxy|","primary"):button("+ " + names[kind] + " 추가","new-entity",kind,"primary"))}</section></div>`;
+  return header(ui.tab==="main"?"WORLD ARCHIVE":"PHILOSOPHY ARCHIVE",viewTitle[ui.view]||"아카이브",ui.view==="spaces"?"은하 아래에 행성을, 행성 아래에 도시를 기록합니다.":ui.view==="thought"?"인물과 사상가의 주장을 기록합니다. 주장은 세계관의 객관적 사실과 구분됩니다.":ui.view==="generations"?"기존 ID를 유지하며 세대와 작품을 추가·편집·정렬합니다.":"하나의 원본을 기록하고, 여러 작품에서 함께 참조하세요.",(ui.view==="spaces"?button("3D 지도","view","atlas","ghost"):"")+creation+(ui.view==="generations"?button("+ 세대","new-generation","","ghost"):"")) + `${ui.query?searchDocuments():""}<div class="toolbar"><label class="search-field">⌕ <input id="list-search" aria-label="자료 검색" value="${h(ui.query)}" placeholder="이름, 설명, 설정에서 검색"></label><select id="kind-filter" aria-label="유형 필터">${option("","모든 유형",ui.kind)}${Object.entries(names).map(([k,n])=>option(k,n,ui.kind)).join("")}</select>${titleFilter}<select id="group-filter" aria-label="그룹 필터">${options(active("groups"),ui.group,"전체 그룹")}</select>${ui.query||ui.kind||ui.group||ui.tab!=="main"&&ui.title?button("필터 초기화","clear-filter","","ghost small"):""}</div><div class="split-view"><section class="list-panel"><div class="list-heading"><span>${ui.view==="spaces"?"공간 계층":"자료 목록"}</span><span class="count">${list.length}</span></div><div class="list-scroll">${ui.view==="spaces"&&!ui.query&&!ui.kind&&!ui.group?spaceTree(list):list.map(e=>listRow(e)).join("")||empty("자료가 없습니다","새 자료를 만들거나 선택한 세대와 타이틀을 바꿔보세요.")}</div></section><section class="detail-panel">${selected?entityDetail(selected):empty("기록을 선택하세요","왼쪽 목록에서 자료를 열거나 새로운 기록을 시작하세요.",ui.view==="spaces"?"":button("+ " + names[kind] + " 추가","new-entity",kind,"primary"))}</section></div>`;
 }
 function listRow(e, depth = 0) {
   return `<button class="list-row ${ui.selected === e.id ? "selected" : ""}" data-action="select" data-id="${e.id}" style="padding-left:${20 + depth * 16}px"><span class="list-name">${h(e.name)}</span><span class="list-meta">${h(spatialLabel(e))} ${e.kind !== "character" && !["galaxy","planet","city"].includes(spatialType(e)) && e.data?.subtype ? "· " + h(e.data.subtype) : ""}${e.data?.status ? " · " + h(e.data.status) : ""}</span></button>`;
@@ -488,13 +497,41 @@ function spaceTree(list, parent = null, depth = 0, seen = new Set()) {
   }).join(""):"";
   return rows+remaining || (parent===null?empty("아직 공간이 없습니다", "은하를 추가하고 그 아래에 행성과 도시를 기록하세요."):"");
 }
+function isSpatialUIRecord(collection,record) {
+  if(!record)return false;
+  const spatial=id=>["space","planet"].includes(lookup(id)?.kind);
+  if(collection==="entities")return ["space","planet"].includes(record.kind);
+  if(collection==="versions")return isSpatialUIRecord(record.target_type,{...record.snapshot,id:record.target_id});
+  if(["states","memberships"].includes(collection))return spatial(record.entity_id);
+  return collection==="relations" && spatial(record.source_id) && spatial(record.target_id);
+}
+
 function recordManagement(e) {
+  if (["space","planet"].includes(e.kind)) return '<span class="muted">공간 읽기 전용 · Work 관리</span>';
   return `<details class="record-tools"><summary>고급 관리</summary><div class="actions">${button("↑ 순서", "reorder-up", e.id, "small ghost")}${button("↓ 순서", "reorder-down", e.id, "small ghost")}${button("분할", "split", e.id, "small ghost")}${button("병합", "merge", e.id, "small ghost")}${button("삭제", "delete-entity", e.id, "small danger")}</div></details>`;
 }
 function entityDetail(e) {
-  if (e.kind === "character" && ui.tab === "main") return characterDetail(e);
+  if (["space","planet"].includes(e.kind)) return spatialReadOnlyDetail(e);
+  if (e.kind === "character" && ui.tab === "main") return renderGenerationCharacter(e, generationCharacterContext());
   return baseEntityDetail(e) + (e.kind === "event" ? eventConnections(e) : "");
 }
+function generationCharacterContext() {
+  return {db,getState:()=>db,ui,generationId:ui.mainGeneration,api,refresh,render,toast,setStatus,localDrafts,draftsPersist,openDialog,
+    onCreated:character=>{ui.selected=character.id;ui.view="character";},
+    openAffiliationManager:()=>changeView("organization","main"),
+    renderLegacyTitleProfiles:character=>legacyCharacterDetail(character),
+    renderRelated:character=>'<div class="detail-sections">'+referenceSection(character.id)+entityTimeline(character)+membershipSection(character)+historySection("entities",character.id)+'</div>',
+    renderAdvanced:character=>recordManagement(character)};
+}
+function spatialReadOnlyDetail(e) {
+  return '<section class="spatial-readonly-detail"><div class="detail-header"><div><span class="eyebrow">'+h(spatialLabel(e))+' / READ ONLY</span><h2>'+h(e.name)+'</h2><small>'+h(e.id)+'</small></div></div><p class="muted">공간 자료는 Work 관리 경로에서 편집합니다.</p><dl><dt>상위 공간</dt><dd>'+h(label(e.data?.parent_id))+'</dd><dt>설명</dt><dd>'+h(e.description || "미등록")+'</dd></dl><pre>'+h(JSON.stringify(e.data || {},null,2))+'</pre>'+button("3D 지도에서 탐색","view","spaces","ghost")+'</section>';
+}
+function eventsView() {
+  const titles=titlesForGeneration(db,ui.mainGeneration);
+  if (!titles.some(t=>t.id===ui.mainTitle)) ui.mainTitle=titles[0]?.id || "";
+  return renderTitleTabs(titles,ui.mainTitle)+(ui.mainTitle?renderTitleSynopsis(lookup(ui.mainTitle),{drafts:localDrafts})+archive():empty("타이틀이 없습니다","세대·타이틀 관리에서 작품을 등록하세요."));
+}
+
 function profileOptions(fieldInfo, selected, multiple = false) {
   const selectedIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
   const kinds = fieldInfo.kinds || (fieldInfo.key === "organization_ids" ? ["organization","civilization"] : fieldInfo.key === "activity_planet_id" ? ["planet"] : ["space","planet"]);
@@ -517,7 +554,7 @@ function archivedAppearanceView(character,relation) {
   const fields=PROFILE_FIELDS.filter(f=>profile.sources[f.key]!=='common');
   return `<details><summary>${h(label(titleId))} · ${hasAppearanceContent(relation)?'작품별 내용 보관됨':'연결 이력 보관됨'}</summary>${fields.length?`<dl>${fields.map(f=>`<dt>${h(f.label)}</dt><dd>${h(profileDisplay(profile.values[f.key]))}</dd>`).join('')}</dl>`:'<p class="muted">모든 항목이 공통 설정을 사용합니다.</p>'}${relation.start||relation.end?`<p>기존 등장 시점: ${h(timeLabel(relation.start))}${relation.end?' ~ '+h(timeLabel(relation.end)):''}</p>`:''}</details>`;
 }
-function characterDetail(e) {
+function legacyCharacterDetail(e) {
   const all = appearancesFor(db,e.id), activeTitles = [...new Set(all.map(r=>r.source_id === e.id ? r.target_id : r.source_id))].map(lookup).filter(t=>t?.kind === "title" && !t.deleted_at);
   ui.characterSlots ||= {};
   let selected = ui.characterSlots[e.id] || "common";
@@ -578,6 +615,7 @@ function baseEntityDetail(e) {
   return `<div class="detail-header"><div><span class="eyebrow">${h(spatialLabel(e))} / GLOBAL RECORD</span><h2>${h(e.name)}</h2><small class="muted">${h(e.id)}</small></div>${ui.tab === "main" ? `<div class="actions">${spatialChildButton(e)}${recordManagement(e)}</div>` : `<div class="actions">${button("↑", "reorder-up", e.id, "small ghost")}${button("↓", "reorder-down", e.id, "small ghost")}${button("분할", "split", e.id, "small ghost")}${button("병합", "merge", e.id, "small ghost")}${button("삭제", "delete-entity", e.id, "small danger")}</div>`}</div><form id="entity-form" data-id="${e.id}"><div class="form-grid">${entityFields(x)}</div><div class="form-actions"><span class="draft-notice muted">${draft ? "브라우저에 보관된 미저장 변경사항이 있습니다." : "고유 ID로 연결되어 이름을 바꾸어도 참조가 유지됩니다."}</span><button class="button primary" type="submit">변경사항 저장</button></div>${draftRecovery("entity:" + e.id)}</form><div class="detail-sections">${referenceSection(e.id)}${entityTimeline(e)}${membershipSection(e)}${historySection("entities", e.id)}</div>`;
 }
 function entityFields(e) {
+  if (["space","planet"].includes(e.kind)) return spatialReadOnlyDetail(e);
   const d = e.data || {};
   const spatial=spatialType(e), knownSpatial=["galaxy","planet","city"].includes(spatial);
   let html =
@@ -811,7 +849,7 @@ function historySection(type, id) {
       .slice(0, 40)
       .map(
         (v) =>
-          `<div class="version-row"><div><strong>${h(v.label || "이전 버전")}</strong><small>${date(v.created_at)}</small></div>${button("복원", "restore-version", v.id, "ghost small")}</div>`,
+          `<div class="version-row"><div><strong>${h(v.label || "이전 버전")}</strong><small>${date(v.created_at)}</small></div>${(isSpatialUIRecord("versions",v) ? '<span class="muted">Work에서 복원</span>' : button("복원", "restore-version", v.id, "ghost small"))}</div>`,
       )
       .join("") || '<p class="muted">첫 수정 후 이전 버전이 보관됩니다.</p>'
   }</details>`;
@@ -932,25 +970,25 @@ function trashView() {
       "휴지통",
       "삭제한 자료와 연결을 복원할 수 있습니다. 다른 기록은 연쇄 삭제되지 않습니다.",
     ) +
-    `<section class="panel"><div class="panel-body">${rows.map((x) => `<div class="link-row"><div><strong>${h(x.name || x.attribute || relNames[x.type] || "관계")}</strong><small>${x.collection} · ${date(x.deleted_at)}</small></div>${button("복원", "restore-item", x.collection + ":" + x.id, "ghost small")}</div>`).join("") || empty("휴지통이 비어 있습니다", "삭제한 자료는 이곳에서 다시 복구할 수 있습니다.")}</div></section>`
+    `<section class="panel"><div class="panel-body">${rows.map((x) => `<div class="link-row"><div><strong>${h(x.name || x.attribute || relNames[x.type] || "관계")}</strong><small>${x.collection} · ${date(x.deleted_at)}</small></div>${(isSpatialUIRecord(x.collection,x) ? '<span class="muted">Work에서 복원</span>' : button("복원", "restore-item", x.collection + ":" + x.id, "ghost small"))}</div>`).join("") || empty("휴지통이 비어 있습니다", "삭제한 자료는 이곳에서 다시 복구할 수 있습니다.")}</div></section>`
   );
 }
 function render() {
-  setMainContext(normalizeMainContext(db,mainContext()));
+  setMainContext(normalizeMainContext(db,{generationId:ui.mainGeneration,titleId:ui.mainTitle,includeCommon:ui.includeCommon}));
   if (ui.tab === "main" && ui.view === "background") ui.view = "spaces";
+  generationCharacterBinding?.();generationCharacterBinding=undefined;
+  titleSynopsisBinding?.dispose();titleSynopsisBinding=undefined;
   disposeAtlas?.();
   disposeAtlas = undefined;
   persist();
   $("#app").innerHTML = shell();
   const page = $("#page");
   if (ui.view === "overview") page.innerHTML = overview();
-  else if (ui.view === "atlas") {
-    page.innerHTML = header("WORLD ARCHIVE / SPACE", "3D 우주 지도", "기존 자료를 읽기 전용으로 탐색합니다.", button("← 공간 목록", "view", "spaces", "ghost")) + '<div id="atlas-root"></div>';
-    const all = active("entities"), scoped = scopedEntities(db,all,mainContext()), spaces = all.filter(e=>["space","planet"].includes(e.kind));
-    const ancestors = withSpaceAncestors(spaces,scoped.filter(e=>["space","planet"].includes(e.kind)));
-    const ids = new Set([...scoped,...ancestors].map(e=>e.id));
-    disposeAtlas = mountAtlas($("#atlas-root"), all.filter(e=>ids.has(e.id)), active("relations"));
+  else if (["spaces","atlas"].includes(ui.view)) {
+    page.innerHTML = header("WORLD ARCHIVE / SPACE", "공간", "3D 우주 지도를 탐색하고 선택한 공간의 저장 정보를 조회합니다.") + '<div id="atlas-root"></div>';
+    disposeAtlas = mountAtlas($("#atlas-root"), active("entities"), active("relations"), {...db,initialSelectionId:ui.selected});
   }
+  else if (ui.view === "event") page.innerHTML = eventsView();
   else if (ui.view === "groups") page.innerHTML = groupsView();
   else if (ui.view === "timeline") {
     page.innerHTML = timelineView();
@@ -964,6 +1002,12 @@ function render() {
   }
   bindForms();
   bindMainForms();
+  const characterRoot=$("[data-generation-character]");
+  if(characterRoot) generationCharacterBinding=bindGenerationCharacter(characterRoot,lookup(characterRoot.dataset.generationCharacter),generationCharacterContext());
+  if(ui.view==="event") {
+    titleSynopsisBinding=bindTitleSynopsis(page,{getTitle:id=>lookup(id),api,drafts:localDrafts,persistDrafts:draftsPersist,onSaved:title=>{db.entities=db.entities.map(e=>e.id===title.id?title:e);},onStatus:setStatus,onError:error=>{toast(error.message,true);setStatus("시놉시스 저장 충돌 · 초안 보존");},onConflict:async id=>{await refresh(false);return lookup(id);}});
+    for(const tab of $$("[data-title-story-select]",page)) tab.onclick=safe(async()=>{await flushBeforeNavigation();ui.mainTitle=tab.dataset.titleStorySelect;ui.eventTitlesByGeneration||={};ui.eventTitlesByGeneration[ui.mainGeneration]=ui.mainTitle;ui.selected=null;render();});
+  }
 }
 function openDialog(title, html, onSubmit, submit = "저장", wide = false) {
   const dialog = $("#dialog");
@@ -986,6 +1030,7 @@ function defaultKind() {
   return (
     {
       character: "character",
+      "all-characters": "character",
       organization: "organization",
       civilization: "civilization",
       event: "event",
@@ -999,7 +1044,7 @@ function defaultKind() {
 }
 function newEntity(kind = defaultKind()) {
   if (kind === "character") return newCharacter();
-  if (kind === "space" || kind === "planet") return newSpace(kind==="planet"?"planet":"galaxy");
+  if (kind === "space" || kind === "planet") throw new Error("공간 데이터는 Site에서 편집하지 않습니다. Work 관리 경로를 사용하세요.");
   const key = "new:" + kind;
   const draft = localDrafts[key];
   const e = { ...(draft || { name: "", description: "", data: kind === "title" ? {generation_id:ui.mainGeneration} : kind === "event" ? {title_id:ui.mainTitle || null} : {} }), kind };
@@ -1031,37 +1076,14 @@ function newEntity(kind = defaultKind()) {
     draftsPersist();
   });
 }
-function newSpace(level="galaxy", parentId=null) {
-  if(!["galaxy","planet","city"].includes(level)) throw new Error("은하, 행성 또는 도시를 선택하세요.");
-  const levelName={galaxy:"은하",planet:"행성",city:"도시"}[level], parentType=level==="planet"?"galaxy":level==="city"?"planet":null;
-  const parent=parentId?lookup(parentId):null;
-  if(parentId && (parent?.deleted_at||spatialType(parent)!==parentType)) throw new Error("상위 공간이 변경되었습니다. 목록을 새로 확인하세요.");
-  const key="new:space:"+level+":"+(parentId||""), draft=localDrafts[key];
-  const e={name:"",description:"",...draft,kind:level==="planet"?"planet":"space",data:{...(draft?.data||{}),...(level==="planet"?{}:{subtype:level}),parent_id:parentId||draft?.data?.parent_id||null}};
-  if(level==="galaxy") e.data.parent_id=null;
-  openDialog("새 "+levelName,`<p class="callout">${level==="galaxy"?"은하를 공간 계층의 첫 단계로 기록합니다.":level==="planet"?"행성이 속할 은하를 선택하세요. 나머지 정보는 나중에 채울 수 있습니다.":"도시가 속할 행성을 선택하세요. 나머지 정보는 나중에 채울 수 있습니다."}</p><div class="form-grid">${entityFields(e)}</div>`,async(_,form)=>{
-    const body=readEntity(form,e);
-    if(!body.name) throw new Error(levelName+" 이름을 입력하세요.");
-    if(parentType) {
-      const selected=lookup(body.data.parent_id);
-      if(!selected||selected.deleted_at||spatialType(selected)!==parentType) throw new Error((parentType==="galaxy"?"소속 은하":"소속 행성")+"를 선택하세요.");
-    } else body.data.parent_id=null;
-    if(level!=="planet") body.data.subtype=level;
-    const result=await api("/entities","POST",body);
-    delete localDrafts[key];draftsPersist();await refresh(false);ui.selected=result.id;render();toast("새 "+levelName+" 기록을 만들었습니다.");
-  },levelName+" 만들기",true);
-  const form=$("#dialog-form");restoreRaw(form,draft?.raw);
-  form.addEventListener("input",()=>{
-    try {localDrafts[key]={...readEntity(form,e),raw:rawForm(form)};}
-    catch {localDrafts[key]={...localDrafts[key],raw:rawForm(form)};}
-    draftsPersist();
-  });
-}
+function newSpace() { throw new Error("공간 데이터는 읽기 전용입니다. Work 관리 경로를 사용하세요."); }
+
 function newCharacterTitleFields(title) {
   const prefix = "newtitle_" + title.id + "_";
   return `<section class="new-character-panel" data-new-character-panel="${h(title.id)}" hidden><div class="profile-heading"><h3>${h(title.name)} · 작품별 설정</h3><p>모든 항목은 선택 사항입니다. 공통 설정을 사용하거나, 이 작품에서 달라지는 정보만 기록하세요.</p></div><div class="title-profile-grid">${PROFILE_FIELDS.map(info=>`<section class="title-profile-field" data-profile-key="${info.key}"><div class="profile-field-heading"><label for="new-profile-${h(title.id)}-${info.key}">${h(info.label)}</label><span class="profile-source">공통 설정 상속</span></div><select id="new-profile-${h(title.id)}-${info.key}" name="${prefix}mode_${info.key}" data-profile-mode="${info.key}" aria-label="${h(title.name)} ${h(info.label)} 설정 방식">${option("common","공통 설정 사용","common")}${option("custom","타이틀별 개별 설정","common")}</select><div class="profile-value">${profileControl(info,info.type === "id-list" || info.type === "aliases" ? [] : info.type === "time" ? {mode:"unknown"} : "",prefix+"profile_"+info.key,true)}</div></section>`).join("")}</div></section>`;
 }
-function newCharacter() {
+function newCharacter() { return newGenerationCharacter(generationCharacterContext()); }
+function newLegacyCharacter() {
   const key="new:character", draft=localDrafts[key], e={name:"",description:"",data:{},...draft,kind:"character"};
   const titles=catalogGenerations(db).flatMap(g=>titlesForGeneration(db,g.id));
   const selected=draft?.title_ids || (ui.mainTitle ? [ui.mainTitle] : []);
@@ -1427,7 +1449,7 @@ function stashView() {
   );
   ui.lastViews[ui.tab] = ui.view;
 }
-async function changeView(view, tab) {
+async function changeView(view, tab, generationId) {
   if (view === "overview" && tab !== "writing") view = "character";
   await flushBeforeNavigation();
   stashView();
@@ -1451,9 +1473,12 @@ async function changeView(view, tab) {
     },
     ui.viewStates?.[view] || {},
   );
+  if(generationId) {setMainContext(normalizeMainContext(db,{generationId,titleId:ui.eventTitlesByGeneration?.[generationId] ?? null,includeCommon:ui.includeCommon}));ui.selected=null;}
   render();
 }
 async function flushBeforeNavigation() {
+  await generationCharacterBinding?.flush?.();
+  await titleSynopsisBinding?.flush?.();
   if ($("#manuscript") && documentTimer) {
     await saveManuscript();
   }
@@ -1828,6 +1853,12 @@ document.addEventListener(
     ev.preventDefault();
     const id = b.dataset.id,
       action = b.dataset.action;
+    if (["delete-entity","reorder-up","reorder-down","merge","split"].includes(action) && isSpatialUIRecord("entities",lookup(id))) throw new Error("공간 자료는 Work에서 관리합니다.");
+    if (action==="restore-version" && isSpatialUIRecord("versions",db.versions.find(v=>v.id===id))) throw new Error("공간 자료는 Work에서 복원합니다.");
+    if (action==="restore-item") {
+      const split=id.indexOf(":"),collection=id.slice(0,split),recordId=id.slice(split+1);
+      if(isSpatialUIRecord(collection,db[collection]?.find(r=>r.id===recordId))) throw new Error("공간 자료는 Work에서 복원합니다.");
+    }
     if (action === "close-dialog") {
       $("#dialog").close();
       return;
@@ -1839,10 +1870,13 @@ document.addEventListener(
       return;
     }
     if (action === "select-generation") {
-      await flushBeforeNavigation();setMainContext(normalizeMainContext(db,{...mainContext(),generationId:id,titleId:null}));ui.selected=null;render();return;
+      await flushBeforeNavigation();
+      ui.eventTitlesByGeneration||={};ui.eventTitlesByGeneration[ui.mainGeneration]=ui.mainTitle;
+      if(ui.tab==="writing") return changeView(ui.lastViews?.main || "character","main",id);
+      setMainContext(normalizeMainContext(db,{generationId:id,titleId:ui.eventTitlesByGeneration[id] ?? null,includeCommon:ui.includeCommon}));ui.selected=null;render();return;
     }
     if(action === "setup-catalog") {
-      await flushBeforeNavigation();const result=await api('/catalog/reconcile','POST',{});await refresh();toast(result.created_ids?.length?'세대와 타이틀을 등록했습니다.':'기존 세대와 타이틀을 확인했습니다.');return;
+      await flushBeforeNavigation();const result=await api('/workspace/upgrade-generation-model','POST',{});await refresh();toast(result.created_ids?.length?'세대와 타이틀을 등록했습니다.':'기존 세대와 타이틀을 확인했습니다.');return;
     }
     if(action === "open-title-slot") {
       await flushBeforeNavigation();const [characterId,titleId]=id.split("|");ui.tab="main";ui.view="character";ui.selected=characterId;ui.characterSlots||={};ui.characterSlots[characterId]=titleId;setMainContext(contextForEntity(db,lookup(titleId),mainContext()));render();return;
@@ -1930,7 +1964,7 @@ document.addEventListener(
       return;
     }
     if (action === "new-entity") return newEntity(names[id] ? id : undefined);
-    if (action === "new-space") { const [level,parentId]=id.split("|");return newSpace(level,parentId||null); }
+    if (action === "new-space") throw new Error("공간 데이터는 Site에서 편집하지 않습니다. Work 관리 경로를 사용하세요.");
     if (action === "new-event") return newEntity("event");
     if (action === "delete-entity") return deleteEntity(id);
     if (action === "new-relation") return relationEditor(id);
@@ -2067,7 +2101,8 @@ document.addEventListener(
   safe(async (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") {
       ev.preventDefault();
-      if ($("#title-settings-form")) $("#title-settings-form").requestSubmit();
+      if ($("#gen-common-form") || $("[data-title-story-form]")) await flushBeforeNavigation();
+      else if ($("#title-settings-form")) $("#title-settings-form").requestSubmit();
       else if ($("#manuscript")) await saveManuscript();
       else if ($("#entity-form")) $("#entity-form").requestSubmit();
     }
@@ -2085,13 +2120,13 @@ window.addEventListener("beforeunload", (ev) => {
 });
 try {
   await refresh(false);
-  const initialCatalog=catalogStatus(db);
+  const initialCatalog=workspaceUpgradeStatus(db);
   let catalogWarning="";
-  if(initialCatalog.needsSetup && !initialCatalog.conflicts.length) {
+  if(initialCatalog.needsUpgrade && !initialCatalog.catalog.conflicts.length) {
     try {
       // Apply the owner's approved title catalog through the authenticated
       // mutation endpoint, after the initial read-only state request succeeds.
-      await api("/catalog/reconcile","POST",{});
+      await api("/workspace/upgrade-generation-model","POST",{});
       await refresh(false);
     } catch(error) {
       // Another tab may have completed the same idempotent registration.
@@ -2099,8 +2134,8 @@ try {
       if(error.status===409) {
         try { await refresh(false); } catch {}
       }
-      const current=catalogStatus(db);
-      if(current.needsSetup || current.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 상단 등록 버튼으로 다시 확인할 수 있습니다. " + error.message;
+      const current=workspaceUpgradeStatus(db);
+      if(current.needsUpgrade || current.catalog.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 상단 등록 버튼으로 다시 확인할 수 있습니다. " + error.message;
     }
   }
   render();

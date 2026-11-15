@@ -118,7 +118,7 @@ scenario('catalog preserves legacy IDs, adds six real Universe titles and is ide
   assert.equal(result.created_ids.length, 6);
   assert.deepEqual(result.titles.filter(row => row.data.generation_id === generations[1].id).map(row => row.name), CATALOG[1].titles);
   for (let i = 1; i <= 4; i++) assert.equal(state.entities.find(row => row.id === `title-earth-${i}`).data.extra, 'keep');
-  assert.equal(state.entities.some(row => row.kind === 'title' && row.data.generation_id === 'generation-undecided'), false);
+  assert.deepEqual(state.entities.filter(row => row.kind === 'title' && row.data.generation_id === 'generation-undecided').map(row=>row.name), ['체라']);
   assert.deepEqual(await f.record('entities', extra.id), extra);
   assert.deepEqual(await f.record('documents', manuscript.id), manuscript);
   assert.equal(catalogStatus(state).initialized, true);

@@ -8,13 +8,13 @@ import copy
 import math
 import unicodedata
 
-from .store import fail
+from .store import fail, WRITABLE
 
 
 CATALOG = (
     (1, "Earth", ("위버멘쉬", "마몬", "아나키", "랑데부")),
-    (2, "Universe", ("올쳐", "브이젯", "흑과 백의 서신", "영웅과 용사의 길", "체라", "월계 전쟁")),
-    (3, "Heaven", ()),
+    (2, "Universe", ("올쳐", "브이젯", "흑과 백의 서신", "영웅과 용사의 길", "월계 전쟁")),
+    (3, "Heaven", ("체라",)),
 )
 PROFILE_FIELDS = {
     "name": "text", "aliases": "aliases", "presence": "text", "role": "text",
@@ -71,12 +71,37 @@ def _check_revision(record, value):
         fail("다른 창에서 변경되었습니다. 최신 내용을 다시 불러온 뒤 편집하세요.", 409)
 
 
+def _move_chera_references(store, db, title_id, old_generation, new_generation):
+    """Move only explicit single-title context, never historical snapshots."""
+    changed = []
+    entities = {row["id"]: row for row in store.all(db, "entities")}
+    for table in WRITABLE:
+        for row in store.all(db, table):
+            data = row.get("data", {})
+            if not isinstance(data, dict) or "generation_id" not in data:
+                continue
+            if data.get("title_id") == title_id:
+                if data.get("generation_id") not in (None, "", old_generation, new_generation):
+                    fail({"message": "체라 참조의 세대 정보가 충돌합니다.", "collection": table, "id": row["id"]}, 409)
+                if old_generation and data.get("generation_id") == old_generation:
+                    updated = {**data, "generation_id": new_generation}
+                    store.update(db, table, row["id"], {"data": updated}, "체라 세대 참조 이전 전")
+                    changed.append({"collection": table, "id": row["id"]})
+            elif isinstance(data.get("title_ids"), list) and title_id in data["title_ids"] and data.get("generation_id") == old_generation:
+                other_generations = {entities.get(key, {}).get("data", {}).get("generation_id") for key in data["title_ids"] if key != title_id}
+                if any(key and key != new_generation for key in other_generations):
+                    fail({"message": "여러 타이틀의 세대 참조가 충돌합니다. 자동으로 덮어쓰지 않습니다.", "collection": table, "id": row["id"]}, 409)
+                store.update(db, table, row["id"], {"data": {**data, "generation_id": new_generation}}, "체라 세대 참조 이전 전")
+                changed.append({"collection": table, "id": row["id"]})
+    return changed
+
+
 def reconcile_catalog(store, db):
     records = store.all(db, "entities")
     status = catalog_status(records)
     if status["conflicts"]:
         fail({"message": "세대·타이틀 중복을 먼저 확인하세요.", "conflicts": status["conflicts"]}, 409)
-    created, updated = [], []
+    created, updated, moved_references = [], [], []
     generations, titles = [], []
     for number, name, names in CATALOG:
         key = catalog_key(number)
@@ -102,6 +127,24 @@ def reconcile_catalog(store, db):
             key = catalog_key(number, title_name)
             records = store.all(db, "entities")
             tagged = [row for row in records if row.get("kind") == "title" and row.get("data", {}).get("catalog_key") == key]
+            if number == 3 and title_name == "체라":
+                candidates = [row for row in records if row.get("kind") == "title" and (row.get("data", {}).get("catalog_key") in {catalog_key(2, "체라"), key} or normal(row.get("name")) == "체라")]
+                if len(candidates) > 1:
+                    fail({"message": "체라 타이틀이 여러 개입니다. 기존 ID를 먼저 확인하세요.", "ids": [row["id"] for row in candidates]}, 409)
+                if candidates:
+                    old = candidates[0]
+                    already_moved = old.get("data", {}).get("catalog_key") == key and old.get("data", {}).get("generation_id") == generation["id"]
+                    if already_moved:
+                        titles.append(old)
+                        continue
+                    if old.get("deleted_at"):
+                        fail("기존 체라 타이틀이 휴지통에 있습니다. 자동으로 복원하거나 재생성하지 않습니다.", 409)
+                    old_generation = old.get("data", {}).get("generation_id")
+                    title = store.update(db, "entities", old["id"], {"sort_order": index, "data": {**old.get("data", {}), "generation_id": generation["id"], "catalog_key": key}}, "체라 3세대 이전 전")
+                    updated.append(title["id"])
+                    moved_references.extend(_move_chera_references(store, db, title["id"], old_generation, generation["id"]))
+                    titles.append(title)
+                    continue
             if tagged:
                 if len(tagged) != 1:
                     fail("타이틀 등록 표식의 세대 또는 ID가 일치하지 않습니다.", 409)
@@ -122,7 +165,7 @@ def reconcile_catalog(store, db):
                     title = store.create(db, "entities", {"kind": "title", "name": title_name, "sort_order": index, "data": {"generation_id": generation["id"], "catalog_key": key, "status": "구상", "time": {"mode": "unknown"}}})
                     created.append(title["id"])
             titles.append(title)
-    return {"generations": generations, "titles": titles, "created_ids": created, "updated_ids": updated, "unchanged": not created and not updated, "catalog": catalog_status(store.all(db, "entities"))}
+    return {"generations": generations, "titles": titles, "created_ids": created, "updated_ids": updated, "moved_references": moved_references, "unchanged": not created and not updated and not moved_references, "catalog": catalog_status(store.all(db, "entities"))}
 
 
 def appearance_title_id(store, db, relation, character_id):
@@ -197,6 +240,9 @@ def create_character(store, db, payload):
                 fail(f"지원하지 않는 작품별 정보 항목: {key}")
             _validate_profile_value(store, db, key, value)
         slots[title_id] = {"overrides": overrides, "inherit_fields": inherited}
+    generation_ids, generation_slots = _generation_creation_slots(store, db, payload, selected)
+    data["generation_model_version"] = 1
+    _validate_common_generation_fields(data)
     values = {"kind": "character", "name": (payload.get("name") or "").strip() or "이름 미정", "description": payload.get("description") or "", "data": data}
     if payload.get("sort_order") is not None:
         values["sort_order"] = payload["sort_order"]
@@ -205,7 +251,11 @@ def create_character(store, db, payload):
         "source_id": character["id"], "target_id": title_id, "type": "appearance",
         "data": {"profile_schema": 1, **slots.get(title_id, {"overrides": {}, "inherit_fields": []})},
     }) for title_id in selected]
-    return {"character": character, "appearances": appearances}
+    generations = [store.create(db, "relations", {
+        "source_id": character["id"], "target_id": gid, "type": "generation_appearance",
+        "data": generation_slots[gid],
+    }) for gid in generation_ids]
+    return {"character": character, "appearances": appearances, "generation_appearances": generations}
 
 
 def sync_appearances(store, db, character_id, payload):
@@ -319,6 +369,12 @@ def update_title_settings(store, db, character_id, title_id, payload):
 def validate_main_record(store, db, table, record):
     """Optional added fields are validated without making legacy fields required."""
     data = record.get("data", {})
+    if table == "relations" and (record.get("type") == "generation_appearance" or data.get("generation_schema") == 1):
+        source = store.get(db, "entities", record.get("source_id"), False)
+        target = store.get(db, "entities", record.get("target_id"), False)
+        if record.get("type") != "generation_appearance" or not source or not target or {source.get("kind"), target.get("kind")} != {"character", "generation"}:
+            fail("세대별 인물 설정은 인물과 세대의 등장 연결이어야 합니다.")
+        _validate_generation_profile(store, db, data, active_references=False)
     if table == "relations" and data.get("profile_schema") == 1:
         source = store.get(db, "entities", record.get("source_id"), False)
         target = store.get(db, "entities", record.get("target_id"), False)
@@ -335,6 +391,8 @@ def _title_generations(store, db, entity):
     titles = {row["id"]: row for row in store.all(db, "entities") if row.get("kind") == "title" and not row.get("deleted_at")}
     ids = set()
     data = entity.get("data", {})
+    if entity.get("kind") == "event" and data.get("title_id") in titles:
+        return {titles[data["title_id"]].get("data", {}).get("generation_id")} - {None, ""}
     if data.get("title_id") in titles:
         ids.add(data["title_id"])
     for title_id in data.get("title_ids") or []:
@@ -355,6 +413,7 @@ def validate_main_mutation(store, db, table, record, previous=None):
     data = record.get("data", {})
     if table == "entities":
         if record.get("kind") == "character":
+            _validate_common_generation_fields(data, previous.get("data", {}) if previous else None)
             for key in PROFILE_FIELDS:
                 if key in ("name", "description") or key not in data or previous and previous.get("data", {}).get(key) == data[key]:
                     continue
@@ -369,6 +428,9 @@ def validate_main_mutation(store, db, table, record, previous=None):
                 fail("사건의 세대와 소속 타이틀의 세대가 다릅니다.")
     if table != "relations":
         return
+    if record.get("type") == "generation_appearance":
+        previous_data = previous.get("data", {}) if previous else {}
+        _validate_generation_profile(store, db, {key: value for key, value in data.items() if key in {"affiliations", "ideology_rank", "narrative"} and (not previous or previous_data.get(key) != value)}, previous=previous_data)
     if previous and all(record.get(key) == previous.get(key) for key in ("source_id", "target_id", "type")):
         return
     source = store.get(db, "entities", record.get("source_id"), False)
@@ -393,6 +455,8 @@ def title_ids_for_entity(state, item, visited=None):
     titles = {key for key, row in entities.items() if row.get("kind") == "title" and not row.get("deleted_at")}
     result = {item["id"]} if item["id"] in titles else set()
     data = item.get("data", {})
+    if item.get("kind") == "event" and data.get("title_id") in titles:
+        return {data["title_id"]}
     if data.get("title_id") in titles:
         result.add(data["title_id"])
     result.update(title_id for title_id in data.get("title_ids") or [] if title_id in titles)
@@ -438,6 +502,13 @@ def title_ids_for_entity(state, item, visited=None):
 def matches_title_scope(state, item, generation_id=None, title_id=None, include_common=True):
     if not generation_id and not title_id:
         return True
+    if not item:
+        return include_common
+    if generation_id and not title_id:
+        ids = generation_ids_for_entity(state, item)
+        if item.get("kind") == "character":
+            return generation_id in ids
+        return generation_id in ids if ids else include_common
     ids = title_ids_for_entity(state, item)
     if not ids:
         return include_common
@@ -445,3 +516,247 @@ def matches_title_scope(state, item, generation_id=None, title_id=None, include_
         return title_id in ids
     entities = {row["id"]: row for row in state.get("entities", [])}
     return any(entities.get(record_id, {}).get("data", {}).get("generation_id") == generation_id for record_id in ids)
+
+
+def generation_ids_for_entity(state, item, visited=None):
+    """One read-only generation projection; the timeline itself stays global."""
+    visited = set() if visited is None else visited
+    if not item or item["id"] in visited:
+        return set()
+    visited.add(item["id"])
+    entities = {r["id"]: r for r in state.get("entities", [])}
+    generations = {key for key, row in entities.items() if row.get("kind") == "generation" and not row.get("deleted_at")}
+    relations = [r for r in state.get("relations", []) if not r.get("deleted_at")]
+    generation_links = [r for r in relations if r.get("type") == "generation_appearance"]
+    if item.get("kind") == "generation":
+        return {item["id"]} if item["id"] in generations else set()
+    if item.get("kind") == "character":
+        all_links = [r for r in state.get("relations", []) if r.get("type") == "generation_appearance" and item["id"] in (r.get("source_id"), r.get("target_id"))]
+        if all_links or item.get("data", {}).get("generation_model_version") == 1:
+            return {key for r in all_links if not r.get("deleted_at") for key in (r.get("source_id"), r.get("target_id")) if key in generations}
+    data = item.get("data", {})
+    result = {data["generation_id"]} if data.get("generation_id") in generations else set()
+    result.update(key for key in data.get("generation_ids") or [] if key in generations)
+    result.update(entities.get(key, {}).get("data", {}).get("generation_id") for key in title_ids_for_entity(state, item))
+    collection = "groups" if any(r["id"] == item["id"] for r in state.get("groups", [])) else "entities"
+    if collection == "groups" or item.get("kind") in {"organization", "civilization"}:
+        for relation in generation_links:
+            refs = relation.get("data", {}).get("affiliations", [])
+            if any(isinstance(ref, dict) and ref.get("collection") == collection and ref.get("id") == item["id"] for ref in refs):
+                result.update(key for key in (relation.get("source_id"), relation.get("target_id")) if key in generations)
+        if collection == "groups":
+            for member in state.get("memberships", []):
+                if not member.get("deleted_at") and member.get("group_id") == item["id"]:
+                    result.update(generation_ids_for_entity(state, entities.get(member.get("entity_id")), visited))
+        else:
+            for relation in relations:
+                other = relation.get("target_id") if relation.get("source_id") == item["id"] else relation.get("source_id") if relation.get("target_id") == item["id"] else None
+                if entities.get(other, {}).get("kind") == "character":
+                    result.update(generation_ids_for_entity(state, entities[other], visited))
+    return result.intersection(generations)
+
+GENERATION_TEXT_FIELDS = {"ideology_rank", "narrative"}
+COMMON_GENERATION_FIELDS = {"ideology", "primary_power", "character_narrative"}
+MBTI_AXES = {"ei", "sn", "tf", "jp"}
+
+
+def generation_id_for_appearance(store, db, relation, character_id):
+    if relation.get("type") != "generation_appearance":
+        return None
+    other = relation.get("target_id") if relation.get("source_id") == character_id else relation.get("source_id") if relation.get("target_id") == character_id else None
+    generation = store.get(db, "entities", other, False) if other else None
+    return generation["id"] if generation and generation.get("kind") == "generation" else None
+
+
+def generation_appearances(store, db, character_id, include_archived=False):
+    return [row for row in store.all(db, "relations")
+            if (include_archived or not row.get("deleted_at")) and generation_id_for_appearance(store, db, row, character_id)]
+
+
+def _validate_common_generation_fields(data, previous=None):
+    for key in COMMON_GENERATION_FIELDS:
+        if key in data and (previous is None or data[key] != previous.get(key)) and data[key] is not None and not isinstance(data[key], str):
+            fail(f"{key}는 텍스트 또는 미정이어야 합니다.")
+    if "mbti" not in data or previous is not None and data["mbti"] == previous.get("mbti"):
+        return
+    mbti = data["mbti"]
+    if mbti is None:
+        return
+    if not isinstance(mbti, dict) or any(key not in MBTI_AXES for key in mbti):
+        fail("MBTI는 네 성향 축의 비율 객체여야 합니다.")
+    for value in mbti.values():
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 <= value <= 100):
+            fail("MBTI 비율은 0부터 100 사이의 숫자 또는 미정이어야 합니다.")
+
+
+def _validate_generation_profile(store, db, data, active_references=True, previous=None):
+    if not isinstance(data, dict):
+        fail("세대별 인물 설정은 객체여야 합니다.")
+    for key in GENERATION_TEXT_FIELDS:
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            fail(f"{key}는 텍스트여야 합니다.")
+    if "affiliations" not in data or data["affiliations"] is None:
+        return
+    affiliations = data["affiliations"]
+    if not isinstance(affiliations, list):
+        fail("소속은 기존 집단·그룹 연결 목록이어야 합니다.")
+    seen = set()
+    for ref in affiliations:
+        if not isinstance(ref, dict) or ref.get("collection") not in ("entities", "groups") or not isinstance(ref.get("id"), str) or not ref["id"]:
+            fail("소속 연결의 종류와 ID를 확인하세요.")
+        pair = (ref["collection"], ref["id"])
+        if pair in seen:
+            fail("소속 연결에 중복이 있습니다.")
+        seen.add(pair)
+        target = store.get(db, ref["collection"], ref["id"])
+        if ref["collection"] == "entities" and target.get("kind") not in {"organization", "civilization"}:
+            fail("소속은 집단·문명 또는 그룹이어야 합니다.")
+        was_linked = any(old.get("collection") == ref["collection"] and old.get("id") == ref["id"] for old in (previous or {}).get("affiliations") or [] if isinstance(old, dict))
+        if active_references and target.get("deleted_at") and not was_linked:
+            fail("휴지통의 소속 자료는 새 연결에 사용할 수 없습니다.")
+
+
+def _generation_creation_slots(store, db, payload, fallback_title_ids=()):
+    selected = payload.get("generation_ids")
+    if "generation_ids" not in payload:
+        selected = []
+        for title_id in fallback_title_ids:
+            title = _active_entity(store, db, title_id, "title")
+            gid = title.get("data", {}).get("generation_id")
+            if gid and gid not in selected:
+                selected.append(gid)
+    if not isinstance(selected, list) or any(not isinstance(key, str) or not key for key in selected) or len(set(selected)) != len(selected):
+        fail("등장 세대는 중복 없는 세대 ID 목록이어야 합니다.")
+    for gid in selected:
+        _active_entity(store, db, gid, "generation")
+    settings = payload.get("generation_settings")
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict) or any(gid not in selected for gid in settings):
+        fail("선택한 세대의 설정만 저장할 수 있습니다.")
+    slots = {}
+    for gid in selected:
+        supplied = settings.get(gid, {})
+        if not isinstance(supplied, dict) or any(key not in {"affiliations", "ideology_rank", "narrative"} for key in supplied):
+            fail("지원하는 세대별 인물 설정을 입력하세요.")
+        data = {"generation_schema": 1, "affiliations": [], "ideology_rank": "", "narrative": "", **{key: copy.deepcopy(value) if value is not None else [] if key == "affiliations" else "" for key, value in supplied.items()}}
+        _validate_generation_profile(store, db, data)
+        slots[gid] = data
+    return selected, slots
+
+
+def upgrade_generation_model(store, db):
+    catalog = reconcile_catalog(store, db)
+    created, characters = [], []
+    entities = {row["id"]: row for row in store.all(db, "entities")}
+    for character in list(entities.values()):
+        if character.get("kind") != "character" or character.get("data", {}).get("generation_model_version") == 1:
+            continue
+        existing = generation_appearances(store, db, character["id"], include_archived=True)
+        by_generation = {}
+        for relation in existing:
+            gid = generation_id_for_appearance(store, db, relation, character["id"])
+            by_generation.setdefault(gid, []).append(relation)
+        if any(len(rows) > 1 for rows in by_generation.values()):
+            fail({"message": "세대별 등장 연결이 중복되었습니다. 기존 내용을 먼저 확인하세요.", "character_id": character["id"]}, 409)
+        inferred = {}
+        for relation in store.all(db, "relations"):
+            if relation.get("deleted_at"):
+                continue
+            title_id = appearance_title_id(store, db, relation, character["id"])
+            title = entities.get(title_id)
+            gid = title and title.get("data", {}).get("generation_id")
+            generation = entities.get(gid)
+            if title and not title.get("deleted_at") and generation and not generation.get("deleted_at"):
+                inferred.setdefault(gid, []).append(title_id)
+        for gid, title_ids in inferred.items():
+            if gid in by_generation:
+                continue  # Archived choices and prior generation data are intentional.
+            created.append(store.create(db, "relations", {
+                "source_id": character["id"], "target_id": gid, "type": "generation_appearance",
+                "data": {"generation_schema": 1, "affiliations": [], "ideology_rank": "", "narrative": ""},
+            }))
+        characters.append(store.update(db, "entities", character["id"], {"data": {**character.get("data", {}), "generation_model_version": 1}}, "인물 세대별 정보 체계 이전 전"))
+    return {"catalog": catalog, "characters": characters, "created_generation_appearances": created, "unchanged": catalog["unchanged"] and not characters and not created}
+
+
+def sync_generations(store, db, character_id, payload):
+    character = _active_entity(store, db, character_id, "character")
+    _check_revision(character, payload.get("revision"))
+    selected = payload.get("generation_ids")
+    if not isinstance(selected, list) or any(not isinstance(gid, str) or not gid for gid in selected) or len(set(selected)) != len(selected):
+        fail("등장 세대는 중복 없는 세대 ID 목록이어야 합니다.")
+    for gid in selected:
+        _active_entity(store, db, gid, "generation")
+    existing = generation_appearances(store, db, character_id, include_archived=True)
+    revisions = payload.get("generation_revisions") or {}
+    if not isinstance(revisions, dict) or existing and (set(revisions) != {r["id"] for r in existing}):
+        fail("세대별 연결의 수정 번호 목록이 변경되었습니다.", 409)
+    by_generation = {}
+    for relation in existing:
+        _check_revision(relation, revisions.get(relation["id"]))
+        gid = generation_id_for_appearance(store, db, relation, character_id)
+        by_generation.setdefault(gid, []).append(relation)
+    if any(len(rows) > 1 for rows in by_generation.values()):
+        fail("세대별 등장 연결이 중복되었습니다. 기존 기록을 먼저 확인하세요.", 409)
+    detaching = [r for r in existing if not r.get("deleted_at") and generation_id_for_appearance(store, db, r, character_id) not in selected]
+    has_content = lambda r: bool(r.get("data", {}).get("affiliations")) or bool(r.get("data", {}).get("ideology_rank")) or bool(r.get("data", {}).get("narrative"))
+    needed = [generation_id_for_appearance(store, db, r, character_id) for r in detaching if has_content(r)]
+    confirm = payload.get("confirm_detach")
+    if needed and confirm is not True and not (isinstance(confirm, list) and all(gid in confirm for gid in needed)):
+        fail({"message": "세대별 정보를 보관한 채 연결을 해제할지 확인하세요.", "generation_ids": needed, "preserved": True}, 409)
+    detached, restored, created = [], [], []
+    for relation in detaching:
+        detached.append(store.delete(db, "relations", relation["id"]))
+    for gid in selected:
+        candidates = by_generation.get(gid, [])
+        if candidates and not candidates[0].get("deleted_at"):
+            continue
+        if candidates:
+            restored.append(store.delete(db, "relations", candidates[0]["id"], restore=True))
+        else:
+            created.append(store.create(db, "relations", {"source_id": character_id, "target_id": gid, "type": "generation_appearance", "data": {"generation_schema": 1, "affiliations": [], "ideology_rank": "", "narrative": ""}}))
+    if detached or restored or created or character.get("data", {}).get("generation_model_version") != 1:
+        data = character.get("data", {})
+        counter = data.get("generation_appearance_revision", 0)
+        counter = counter if _revision(counter) or counter == 0 else 0
+        character = store.update(db, "entities", character_id, {"revision": character["revision"], "data": {**data, "generation_model_version": 1, "generation_appearance_revision": counter + 1}}, "등장 세대 변경 전")
+    return {"character": character, "generation_appearances": generation_appearances(store, db, character_id, include_archived=True), "created": created, "restored": restored, "detached": detached}
+
+
+def update_generation_settings(store, db, character_id, generation_id, payload):
+    _active_entity(store, db, character_id, "character")
+    _active_entity(store, db, generation_id, "generation")
+    matches = [r for r in generation_appearances(store, db, character_id) if generation_id_for_appearance(store, db, r, character_id) == generation_id]
+    if len(matches) != 1:
+        fail("해당 세대의 고유한 등장 연결을 먼저 선택하세요.", 409)
+    relation = matches[0]
+    _check_revision(relation, payload.get("revision"))
+    if any(key not in {"revision", "affiliations", "ideology_rank", "narrative"} for key in payload):
+        fail("지원하지 않는 세대별 인물 정보 항목입니다.")
+    patch = {key: copy.deepcopy(value) for key, value in payload.items() if key != "revision"}
+    _validate_generation_profile(store, db, patch, previous=relation.get("data", {}))
+    patch = {key: value if value is not None else [] if key == "affiliations" else "" for key, value in patch.items()}
+    data = {**relation.get("data", {}), **patch, "generation_schema": 1}
+    return store.update(db, "relations", relation["id"], {"revision": relation["revision"], "data": data}, "세대별 인물 설정 변경 전")
+
+
+def update_title_story(store, db, title_id, payload):
+    title = _active_entity(store, db, title_id, "title")
+    _check_revision(title, payload.get("revision"))
+    if any(key not in {"revision", "overview", "synopsis"} for key in payload):
+        fail("지원하지 않는 작품 개요 항목입니다.")
+    data = copy.deepcopy(title.get("data", {}))
+    if "overview" in payload:
+        if not isinstance(payload["overview"], str):
+            fail("작품 개요는 텍스트여야 합니다.")
+        data["overview"] = payload["overview"]
+    if "synopsis" in payload:
+        synopsis = payload["synopsis"]
+        if not isinstance(synopsis, dict) or any(key not in {"ki", "seung", "jeon", "gyeol"} for key in synopsis) or any(not isinstance(value, str) for value in synopsis.values()):
+            fail("시놉시스는 기·승·전·결의 텍스트 객체여야 합니다.")
+        previous = data.get("synopsis", {})
+        if not isinstance(previous, dict) and "synopsis_legacy" not in data:
+            data["synopsis_legacy"] = copy.deepcopy(previous)
+        data["synopsis"] = {**(previous if isinstance(previous, dict) else {}), **synopsis}
+    return store.update(db, "entities", title_id, {"revision": title["revision"], "data": data}, "작품 개요·시놉시스 변경 전")

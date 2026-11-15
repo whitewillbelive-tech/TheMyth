@@ -1,4 +1,4 @@
-import { generations, titlesForGeneration, generationForTitle, titleIdsForEntity, matchesTitleScope, appearancesFor } from './main-domain.js';
+import { generations, titlesForGeneration, generationForTitle, titleIdsForEntity, matchesTitleScope, appearancesFor, generationIdsForCharacter, generationIdsForEntity } from './main-domain.js';
 
 const BACKGROUND = new Set(['spaces', 'setting', 'timeline', 'atlas']);
 const PEOPLE = new Set(['character', 'organization', 'civilization', 'groups']);
@@ -22,7 +22,7 @@ export function contextForEntity(state, entity, context) {
   return generation ? {...context,generationId:generation.id,titleId:ids[0]} : {...context};
 }
 export function scopedEntities(state, entities, context, {includeCommon = context.includeCommon} = {}) {
-  return entities.filter(entity => matchesTitleScope(state, entity, {...context,includeCommon}));
+  return entities.filter(entity => entity.kind==='character' && context.generationId && !context.titleId ? generationIdsForCharacter(state,entity.id).includes(context.generationId) : matchesTitleScope(state, entity, {...context,includeCommon}));
 }
 export function withSpaceAncestors(all, visible) {
   const keep = new Set(visible.map(e => e.id));
@@ -51,7 +51,7 @@ export function scopedGroups(state, groups, context) {
   if (!context.titleId && !context.generationId) return groups;
   return groups.filter(group => {
     const members = (state.memberships || []).filter(m => !m.deleted_at && m.group_id === group.id).map(m => (state.entities || []).find(e => e.id === m.entity_id)).filter(Boolean);
-    return members.some(e => matchesTitleScope(state,e,{...context,includeCommon:false})) || context.includeCommon && members.every(e => !titleIdsForEntity(state,e).length);
+    return generationIdsForEntity(state,group).includes(context.generationId) || members.some(e => matchesTitleScope(state,e,{...context,includeCommon:false})) || context.includeCommon && !generationIdsForEntity(state,group).length && members.every(e => !generationIdsForEntity(state,e).length);
   });
 }
 

@@ -84,3 +84,6 @@ yarn-error.log*
 /public/atlas-*.js
 /public/main-domain.js
 /public/main-view-model.js
+/public/generation-characters.js
+/public/generation-character-domain.js
+/public/title-synopsis.js

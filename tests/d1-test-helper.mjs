@@ -62,7 +62,10 @@ export class Fixture {
     } };
   }
   async response(method, path, payload, headers = {}) {
-    const opts = { method, headers: { 'oai-authenticated-user-id': 'test-owner', ...headers } };
+    // The transport fixture represents an authenticated Sites service caller.
+    // Visitor-boundary tests explicitly supply dispatch-injected identity or
+    // browser headers; the live owner-private dispatch itself is not mocked here.
+    const opts = { method, headers: { ...headers } };
     if (payload !== undefined) { opts.body = JSON.stringify(payload); opts.headers['content-type'] = 'application/json'; }
     return this.handler(new Request('https://myth.test' + path, opts), this.env);
   }

@@ -1,6 +1,7 @@
 // D1 adapter for the original myth/store.py domain model.
 // Reads are one snapshot; every multi-record change commits as one guarded batch.
 import { validateWorkspaceRecord } from './main-workspace.js';
+import { assertSpatialWriteAllowed } from './spatial-permissions.js';
 export const COLLECTIONS = ['entities','relations','groups','memberships','states','documents','chapters','versions'];
 export const WRITABLE = COLLECTIONS.slice(0,-1);
 const KINDS = new Set(['generation','title','character','organization','event','space','planet','civilization','setting','thought','thinker','custom']);
@@ -19,12 +20,19 @@ export function equal(a,b) {
 }
 function references(value,target) {
   if (Array.isArray(value)) return value.some(v=>references(v,target));
-  if (object(value)) return Object.entries(value).some(([k,v])=>(k.endsWith('_id')&&v===target)||(k.endsWith('_ids')&&Array.isArray(v)&&v.includes(target))||references(v,target));
+  if (object(value)) return (['entities','groups'].includes(value.collection)&&value.id===target)||Object.entries(value).some(([k,v])=>(k.endsWith('_id')&&v===target)||(k.endsWith('_ids')&&Array.isArray(v)&&v.includes(target))||references(v,target));
   return false;
 }
 function redirect(value,source,target) {
-  if (Array.isArray(value)) return value.map(v=>redirect(v,source,target));
+  if (Array.isArray(value)) {
+    const result=value.map(v=>redirect(v,source,target));
+    if(result.every(v=>object(v)&&['entities','groups'].includes(v.collection)&&typeof v.id==='string')) {
+      const seen=new Set();return result.filter(v=>{const key=v.collection+':'+v.id;if(seen.has(key))return false;seen.add(key);return true;});
+    }
+    return result;
+  }
   if (object(value)) return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,
+    k==='id'&&['entities','groups'].includes(value.collection)&&v===source ? target :
     k.endsWith('_id')&&v===source ? target : k.endsWith('_ids')&&Array.isArray(v)&&v.every(x=>typeof x==='string') ? [...new Set(v.map(x=>x===source?target:x))] : redirect(v,source,target)]));
   return value;
 }
@@ -39,6 +47,7 @@ export class Store {
     this.original=Object.fromEntries(COLLECTIONS.map(t=>[t,new Map(records[t].map(r=>[r.id,clone(r)]))]));
     this.records=Object.fromEntries(COLLECTIONS.map(t=>[t,new Map(records[t].map(r=>[r.id,clone(r)]))]));
     this.imported=false; this.replacing=false; this.initialized=initialized;
+    this.spatialWritesAllowed=true;
   }
   static async load(env) {
     if (!env.DB) fail('영속 저장소가 연결되지 않았습니다.',503);
@@ -60,6 +69,7 @@ export class Store {
   state() { return {...Object.fromEntries(COLLECTIONS.map(t=>[t,this.all(t)])),meta:{schema_version:1,exported_at:now(),application:'THE MYTH',storage:'cloudflare-d1',migration_status:this.initialized||this.imported?'backup_imported':'backup_missing'}}; }
   backup() { return {...this.state(),format:'the-myth-backup',format_version:1}; }
   async commit() {
+    assertSpatialWriteAllowed(this);
     const statements=[];
     for (const table of COLLECTIONS) {
       if(this.replacing) statements.push(this.env.DB.prepare(`DELETE FROM ${table}`));
@@ -294,6 +304,7 @@ export class Store {
     }
     for(const table of WRITABLE) for(const record of this.all(table)) {if(!Number.isInteger(record.revision)||record.revision<1) fail('백업의 수정 번호가 잘못되었습니다.'); this.validate(table,record);}
     for(const version of this.all('versions')) this.validateVersion(version);
+    assertSpatialWriteAllowed(this);
     if(!this.env.BUCKET) fail('복원 전 안전 백업 저장소가 연결되지 않았습니다. 기존 자료는 변경되지 않았습니다.',503);
     const safety=`before-restore-${now().replace(/[^0-9TZ]/g,'')}-${newId().slice(0,8)}.json`;
     await this.env.BUCKET.put(`backups/${safety}`,JSON.stringify(previous),{httpMetadata:{contentType:'application/json'}});

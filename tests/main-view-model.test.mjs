@@ -127,23 +127,29 @@ test('timeline time lookup carries the common selection, including year zero and
 
 // Execute the actual application entrypoint with a small DOM/network fixture.
 // This verifies navigation wiring; it is not a browser, layout or GPU test.
-test('application navigation keeps the shared title, expands background without a dashboard, and retains the Atlas entry', async () => {
+test('top generation navigation keeps event titles local, restores the workspace, and opens the global read-only Atlas directly', async () => {
   const {readFile}=await import('node:fs/promises');
   const requests=[],atlasCalls=[];
   class Element {
     constructor(doc,id='') {this.doc=doc;this.id=id;this._html='';this.value='';this.checked=false;this.hidden=false;this.dataset={};this.events={};this.classList={toggle(){},add(){},remove(){}};}
     get innerHTML(){return this._html;}
-    set innerHTML(value){this._html=String(value);this.doc.controls.clear();if(this.id==='app')this.doc.page._html='';}
+    set innerHTML(value){this._html=String(value);this.doc.controls.clear();this.doc.titleTabs.clear();if(this.id==='app')this.doc.page._html='';}
     insertAdjacentHTML(where,value){this._html=where==='afterbegin'?String(value)+this._html:this._html+String(value);this.doc.controls.clear();}
     setAttribute(name,value){this[name]=value;}
     querySelector(selector){if(selector==='.nav-chevron')return this.arrow ||= new Element(this.doc);return null;}
-    querySelectorAll(){return [];}
+    querySelectorAll(selector){
+      if(selector!=='[data-title-story-select]')return [];
+      const tabs=[...this._html.matchAll(/<button\b[^>]*data-title-story-select="([^"]+)"[^>]*>/g)].map(match=>{
+        const el=new Element(this.doc);el.dataset.titleStorySelect=match[1];this.doc.titleTabs.set(match[1],el);return el;
+      });
+      return tabs;
+    }
     addEventListener(name,fn){this.events[name]=fn;}
     focus(){}
     setSelectionRange(){}
   }
   class Document {
-    constructor(){this.controls=new Map();this.page=new Element(this,'page');this.app=new Element(this,'app');this.toast=new Element(this,'toast');this.dialog=new Element(this,'dialog');this.listeners={};}
+    constructor(){this.controls=new Map();this.titleTabs=new Map();this.page=new Element(this,'page');this.app=new Element(this,'app');this.toast=new Element(this,'toast');this.dialog=new Element(this,'dialog');this.listeners={};}
     html(){return this.app.innerHTML+this.page.innerHTML;}
     querySelector(selector){
       if(selector==='#app')return this.app;if(selector==='#page')return this.page;if(selector==='#toast')return this.toast;if(selector==='#dialog')return this.dialog;
@@ -177,42 +183,85 @@ test('application navigation keeps the shared title, expands background without 
     for (const [index,name] of spec.titles.entries()) {
       let title=fixture.entities.find(e=>e.kind==='title'&&e.data.generation_id===generation.id&&e.name===name);
       if(!title){title={id:`catalog-${spec.number}-${index}`,kind:'title',name,data:{generation_id:generation.id}};fixture.entities.push(title);}
+      title.sort_order=index;
       title.data.catalog_key=catalogKey(spec.number,name);
     }
   }
+  fixture.entities.find(e=>e.id==='person').data.generation_model_version=1;
+  fixture.relations.push(...['g1','g2'].map((id,index)=>({id:'generation-person-'+index,type:'generation_appearance',source_id:'person',target_id:id,revision:1,data:{generation_schema:1,affiliations:[],ideology_rank:'',narrative:''}})));
+  fixture.entities.push(
+    {id:'event-g2',kind:'event',name:'2세대 사건',data:{title_id:'t3'}},
+    {id:'person-g3',kind:'character',name:'3세대에만 등장',revision:1,data:{generation_model_version:1}},
+  );
+  fixture.relations.push({id:'generation-person-g3',type:'generation_appearance',source_id:'person-g3',target_id:'g3',revision:1,data:{generation_schema:1,affiliations:[],ideology_rank:'',narrative:''}});
   globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>String(path).startsWith('/api/timeline')?{events:[],titles:[],states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
   globalThis.__mainNavigationAtlas=(...args)=>{atlasCalls.push(args);return ()=>{};};
   try {
     let source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
     source=source.replace('"/atlas-view.js"',JSON.stringify('data:text/javascript;base64,'+Buffer.from('export const mountAtlas=(...args)=>globalThis.__mainNavigationAtlas(...args);').toString('base64')))
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
-      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href));
+      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
+      .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
     await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
     const nav=doc.app.innerHTML.match(/<nav class="side-nav"[^>]*>([\s\S]*?)<\/nav>/)[1].replace(/<div id="background-navigation"[\s\S]*?<\/div>/,'');
     assert.equal((nav.match(/<button\b/g)||[]).length,3);
     assert.ok(doc.app.innerHTML.includes('<h1>The Myth</h1>'));
-    assert.equal(requests.some(r=>r.method!=='GET'),false,'opening the UI never performs catalog or data writes');
+    const top=doc.app.innerHTML.match(/<nav class="top-tabs[^>]*>([\s\S]*?)<\/nav>/)[1];
+    assert.equal((top.match(/data-action="select-generation"/g)||[]).length,3);
+    assert.equal(top.includes('data-action="tab" data-id="main"'),false,'the former main tab is removed');
+    assert.ok(top.indexOf('data-id="writing"')>top.lastIndexOf('data-action="select-generation"'),'writing is placed after the three generation tabs');
+    assert.equal(doc.querySelector('#main-title-select'),null);
+    assert.equal(doc.page.innerHTML.includes('data-title-story-select'),false,'characters have no title picker');
+    assert.equal(doc.page.innerHTML.includes('class="generation-tabs"'),false,'generation selection is not duplicated inside the workspace');
+    assert.equal(requests.some(r=>r.method!=='GET'),false,'an already migrated workspace opens without writes');
     const click=async(action,id='')=>{
       const button=new Element(doc);button.dataset={action,id};button.closest=selector=>selector==='[data-action]'?button:null;
       await doc.listeners.click({target:button,preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));return button;
     };
     await click('view','event');
     assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t1');
+    assert.ok(doc.page.innerHTML.includes('data-title-story-select="t1"'));
+    assert.ok(doc.page.innerHTML.includes('data-title-story-select="t2"'));
+    assert.equal(doc.page.innerHTML.includes('data-title-story-select="t3"'),false,'event tabs contain only the selected generation titles');
+    await doc.titleTabs.get('t2').onclick();
+    assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t2');
+    assert.ok(doc.page.innerHTML.includes('data-id="e2"'));
+    assert.equal(doc.page.innerHTML.includes('data-id="e1"'),false,'events from another title do not leak into this list');
     const before=doc.page.innerHTML;
     const background=await click('toggle-background');
     assert.equal(doc.page.innerHTML,before,'background only expands navigation');
     assert.equal(background['aria-expanded'],'true');
     await click('view','timeline');
-    assert.equal(doc.querySelector('#timeline-title'),null,'the main timeline has only the shared title selector');
+    assert.equal(doc.querySelector('#timeline-title'),null,'the unified timeline has no title selector');
+    assert.equal(doc.querySelector('#main-title-select'),null);
+    assert.equal(doc.page.innerHTML.includes('data-title-story-select'),false,'title tabs are restricted to the event workspace');
     doc.querySelector('#timeline-year').value='2040';
     await click('load-timeline');
     const query=new URL(requests.filter(r=>r.path.startsWith('/api/timeline')).at(-1).path,'http://fixture').searchParams;
-    assert.equal(query.get('title_id'),'t1');assert.equal(query.get('generation_id'),'g1');assert.equal(query.get('year'),'2040');
-    assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t1');
-    await click('tab','writing');await click('tab','main');
-    assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t1','writing round trip does not reset main context');
-    await click('view','spaces');assert.ok(doc.page.innerHTML.includes('data-id="atlas"'));
-    await click('view','atlas');assert.equal(atlasCalls.length,1);assert.equal(atlasCalls[0][0].id,'atlas-root');
+    assert.equal(query.has('title_id'),false);assert.equal(query.get('generation_id'),'g1');assert.equal(query.get('year'),'2040');
+    assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t2','hiding the picker must not erase its last event selection');
+    await click('tab','writing');await click('select-generation','g1');
+    const restored=JSON.parse(storage.get('myth-ui'));
+    assert.equal(restored.tab,'main');assert.equal(restored.view,'timeline');assert.equal(restored.mainGeneration,'g1');
+    assert.equal(restored.mainTitle,'t2','writing returns to the previous main generation and title context');
+    await click('view','event');
+    assert.equal(JSON.parse(storage.get('myth-ui')).mainTitle,'t2');
+    await click('select-generation','g2');
+    assert.ok(doc.page.innerHTML.includes('data-title-story-select="t3"'));
+    assert.equal(doc.page.innerHTML.includes('data-title-story-select="t1"'),false);
+    assert.ok(doc.page.innerHTML.includes('data-id="event-g2"'));
+    assert.equal(doc.page.innerHTML.includes('data-id="e2"'),false);
+    await click('view','character');await click('select-generation','g3');
+    assert.ok(doc.page.innerHTML.includes('data-id="person-g3"'));
+    assert.equal(doc.page.innerHTML.includes('data-id="person"'),false,'generation lists do not include unrelated global identities');
+    assert.ok(doc.app.innerHTML.includes('전체 인물 · 공통 자료'),'global identities remain accessible through common management');
+    await click('view','spaces');
+    assert.equal(atlasCalls.length,1,'Space opens the Atlas directly instead of a separate list');assert.equal(atlasCalls[0][0].id,'atlas-root');
+    assert.deepEqual(atlasCalls[0][1].map(e=>e.id).sort(),fixture.entities.map(e=>e.id).sort(),'the Atlas receives the global archive regardless of selected generation');
+    assert.equal(atlasCalls[0][3].entities.length,fixture.entities.length);
+    assert.equal(doc.page.innerHTML.includes('data-title-story-select'),false);
+    assert.equal(doc.page.innerHTML.includes('data-action="new-space"'),false);
   } finally {
     for(const [key,value] of Object.entries(old))if(value===undefined)delete globalThis[key];else globalThis[key]=value;
   }

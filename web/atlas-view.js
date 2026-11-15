@@ -10,13 +10,137 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp
 const types = {galaxy:'은하',planet:'행성',continent:'대륙',region:'지역',city:'도시',other:'공간'};
 const statusLabel = status => ({noncanon:'비정사',confirmed:'정사',draft:'초안',undecided:'미정'}[status] || status || '정사 여부 미정');
 
+// Fullscreen only changes the existing viewer's layout. It never rebuilds a
+// scene or starts another render loop, so camera and selection remain intact.
+export function createAtlasFullscreen(element, { onResize = () => {}, onChange = () => {}, document: doc = element.ownerDocument || globalThis.document, window: win = doc?.defaultView || globalThis.window } = {}) {
+  let active = false, mode = null, disposed = false, pending = false, request = 0;
+  let previousOverflow = null;
+  const resize = () => { if (!disposed) onResize(); };
+  function apply(next, nextMode = null) {
+    if (disposed) return;
+    active = next; mode = next ? nextMode : null;
+    element.classList?.toggle('atlas-maximized', active);
+    element.setAttribute?.('data-atlas-fullscreen', mode || 'off');
+    if (mode === 'fallback' && previousOverflow === null && doc?.body?.style) {
+      previousOverflow = doc.body.style.overflow;
+      doc.body.style.overflow = 'hidden';
+    } else if (mode !== 'fallback' && previousOverflow !== null) {
+      if (doc?.body?.style) doc.body.style.overflow = previousOverflow;
+      previousOverflow = null;
+    }
+    onChange({ active, mode }); resize();
+  }
+  async function enter() {
+    if (disposed || active || pending) return false;
+    pending = true; const attempt = ++request;
+    try {
+      if (typeof element.requestFullscreen !== 'function') throw new Error('Fullscreen API unavailable');
+      await element.requestFullscreen({ navigationUI: 'hide' });
+      if (disposed || attempt !== request) {
+        if (doc?.fullscreenElement === element) { try { await doc.exitFullscreen?.(); } catch {} }
+        return false;
+      }
+      apply(true, 'native'); return true;
+    } catch {
+      if (disposed || attempt !== request) return false;
+      apply(true, 'fallback'); return true;
+    } finally { if (attempt === request) pending = false; }
+  }
+  async function exit() {
+    ++request; pending = false;
+    if (disposed) return false;
+    const ownsNative = doc?.fullscreenElement === element;
+    if (ownsNative) {
+      try { await doc.exitFullscreen?.(); }
+      catch { if (doc?.fullscreenElement === element) { apply(true, 'native'); return false; } }
+    }
+    apply(false); return true;
+  }
+  const nativeChange = () => {
+    if (disposed) return;
+    if (doc?.fullscreenElement === element) apply(true, 'native');
+    else if (mode === 'native') apply(false);
+    else resize();
+  };
+  const keydown = event => {
+    if (event.key === 'Escape' && (active || pending)) {
+      if (mode === 'fallback') event.preventDefault?.();
+      void exit();
+    }
+  };
+  doc?.addEventListener?.('fullscreenchange', nativeChange);
+  doc?.addEventListener?.('keydown', keydown);
+  win?.addEventListener?.('resize', resize);
+  const Observer = win?.ResizeObserver || globalThis.ResizeObserver;
+  const observer = typeof Observer === 'function' ? new Observer(resize) : null;
+  observer?.observe(element);
+  return {
+    enter, exit, toggle: () => active ? exit() : enter(), resize,
+    state: () => ({ active, mode, pending }),
+    dispose() {
+      if (disposed) return;
+      ++request; pending = false; disposed = true;
+      if (doc?.fullscreenElement === element) { try { Promise.resolve(doc.exitFullscreen?.()).catch(() => {}); } catch {} }
+      element.classList?.remove('atlas-maximized');
+      if (previousOverflow !== null && doc?.body?.style) doc.body.style.overflow = previousOverflow;
+      previousOverflow = null; active = false; mode = null;
+      doc?.removeEventListener?.('fullscreenchange', nativeChange);
+      doc?.removeEventListener?.('keydown', keydown);
+      win?.removeEventListener?.('resize', resize);
+      observer?.disconnect();
+    },
+  };
+}
+
+// All facts here come from the archive. Missing facts stay unregistered; the
+// viewer neither infers positions nor copies demo records into real data.
+export function renderAtlasRecordDetails(node, { entities = [], relations = [], groups = [], memberships = [] } = {}) {
+  if (!node || node.demo) return '';
+  const records = entities.filter(item => item && !item.deleted_at), byId = new Map(records.map(item => [item.id, item]));
+  const record = byId.get(node.id);
+  if (!record) return '<p>원본 공간 정보가 등록되지 않았습니다.</p>';
+  const activeGroups = groups.filter(item => !item.deleted_at), groupById = new Map(activeGroups.map(item => [item.id, item]));
+  const parent = byId.get(record.data?.parent_id), related = new Map();
+  const add = item => { if (item && item.id !== record.id) related.set(item.id, item); };
+  const references = (value, id) => value && typeof value === 'object' && Object.entries(value).some(([key, item]) => key.endsWith('_id') ? item === id : key.endsWith('_ids') && Array.isArray(item) ? item.includes(id) : references(item, id));
+  for (const relation of relations.filter(item => !item.deleted_at)) {
+    if (relation.source_id === record.id) add(byId.get(relation.target_id));
+    if (relation.target_id === record.id) add(byId.get(relation.source_id));
+  }
+  for (const item of records) if (!['space', 'planet'].includes(item.kind) && references(item.data, record.id)) add(item);
+  for (const key of ['civilization_id', 'organization_id']) add(byId.get(record.data?.[key]));
+  for (const key of ['civilization_ids', 'organization_ids']) for (const id of record.data?.[key] || []) add(byId.get(id));
+  const linkedGroups = memberships.filter(item => !item.deleted_at && item.entity_id === record.id).map(item => groupById.get(item.group_id)).filter(Boolean);
+  const labels = { character: '인물', organization: '집단', civilization: '문명', event: '사건', setting: '설정', title: '타이틀', generation: '세대', thinker: '사상가' };
+  const link = item => `<button type="button" class="text-link" data-action="open" data-id="${escape(item.id)}">${escape(item.name || '이름 미정')} ↗</button>`;
+  const raw = Object.fromEntries(Object.entries(record.data || {}).filter(([key]) => !['subtype', 'parent_id'].includes(key)));
+  return `<div class="atlas-record-info" aria-label="읽기 전용 공간 정보"><span class="atlas-readonly">읽기 전용</span><h3>${escape(record.name)}</h3><dl><dt>공간 유형</dt><dd>${escape(types[node.type] || labels[record.kind] || '공간')}</dd><dt>상위 공간</dt><dd>${parent ? `${escape(parent.name)} <small>(${escape(parent.id)})</small>` : record.data?.parent_id ? `연결 확인 필요 · ${escape(record.data.parent_id)}` : '미등록'}</dd><dt>기본 설명</dt><dd class="atlas-record-description">${escape(record.description || '미등록')}</dd><dt>위치</dt><dd>${node.coords ? `원본 좌표 · ${escape(node.unit || '단위 미정')}` : '좌표 미등록 · 위치를 추정하지 않습니다.'}</dd></dl><section><h4>관련 문명·인물·집단</h4>${related.size ? [...related.values()].map(item => `<div class="atlas-related-record">${link(item)} <small>${escape(labels[item.kind] || types[item.kind] || '기록')}</small></div>`).join('') : '<p>미등록</p>'}</section><section><h4>연결된 그룹</h4>${linkedGroups.length ? linkedGroups.map(item => `<p>${escape(item.name)} <small>(${escape(item.id)})</small></p>`).join('') : '<p>미등록</p>'}</section>${Object.keys(raw).length ? `<details><summary>기타 저장된 세계관 정보</summary><pre>${escape(JSON.stringify(raw, null, 2))}</pre></details>` : ''}<small>고유 ID: ${escape(record.id)}</small></div>`;
+}
+
 // Never invokes an API or changes the caller's archive state.
-export function mountAtlas(root, entities, relations = []) {
+export function mountAtlas(root, entities, relations = [], context = {}) {
+  root.classList?.add('atlas-workspace');
+  const archiveContext = { ...context, entities, relations };
   const real = adaptWorld(entities);
   let mode = 'real', nodes = real, path = [], renderer = null, cityMap = null, query = '', focusedId = null, surfaceOrigin = null, approach = null, projectedLabels = [];
   let error = '', passages=adaptPassages(real,[]), passageRows=[], selectedPassage=null, selectedObject=null, hoveredObject=null, lastScene=null;
-  root.innerHTML = `<div class="atlas-bar"><div><strong>자료 출처</strong> <button type="button" data-atlas="real" aria-pressed="true">실제 자료</button> <button type="button" data-atlas="demo" aria-pressed="false">가상 데모</button></div><p id="atlas-mode"></p></div><div class="atlas-layout"><section class="atlas-view"><div class="atlas-view-top"><span id="atlas-path"></span><div><button type="button" data-atlas="planet-return" hidden>행성으로</button><button type="button" data-atlas="back">← 이전</button></div></div><div class="atlas-canvas-wrap"><canvas id="atlas-canvas" aria-label="3D 우주 지도. 객체는 오른쪽 목록에서도 선택할 수 있습니다."></canvas><div id="atlas-labels"></div></div><div id="atlas-city-root" hidden></div><div class="atlas-view-bottom"><span>드래그 회전 · 휠 확대/축소 · 점 선택 <strong id="atlas-hover"></strong></span><label>입자 <select id="atlas-density"><option value="standard">기본</option><option value="high">많이</option></select></label><button type="button" data-atlas="zoom-in" aria-label="3D 지도 확대">+</button><button type="button" data-atlas="zoom-out" aria-label="3D 지도 축소">−</button><button type="button" data-atlas="reset">시점 초기화</button></div><p id="atlas-performance" class="atlas-performance" role="status">그래픽을 준비하는 중…</p></section><section class="atlas-list"><label>이름 검색 <input id="atlas-search" placeholder="전체 공간 검색" autocomplete="off"></label><p id="atlas-list-label"></p><div id="atlas-rows"></div><div id="atlas-detail"></div><section class="passage-panel" aria-label="공간 통로"><h2>공간 통로</h2><p id="passage-caption"></p><label><input id="passage-enabled" type="checkbox" checked> 통로선 표시</label><div class="passage-filter"><label><input id="passage-galaxy" type="checkbox" checked> 은하 간</label><label><input id="passage-planet" type="checkbox" checked> 행성 간</label></div><label>상태 <select id="passage-status"><option value="all">전체</option><option value="open">개방</option><option value="restricted">제한</option><option value="closed">폐쇄</option><option value="unstable">불안정</option><option value="unknown">미확정</option></select></label><label>연결 강조 <select id="passage-object"><option value="">선택 안 함</option></select></label><small class="passage-legend"><span class="passage-open">● 개방</span> · <span class="passage-restricted">● 제한</span> · <span class="passage-closed">● 폐쇄</span> · <span class="passage-unstable">● 불안정</span> · <span class="passage-unknown">● 미확정</span><br>은하 간: 긴 점선 · 행성 간: 짧은 점선</small><div id="passage-list"></div><div id="passage-detail"></div></section></section></div>`;
+  root.innerHTML = `<div class="atlas-bar"><div><strong>자료 출처</strong> <button type="button" data-atlas="real" aria-pressed="true">실제 자료</button> <button type="button" data-atlas="demo" aria-pressed="false">가상 데모</button></div><p id="atlas-mode"></p><div class="atlas-window-controls"><button type="button" data-atlas="info-toggle" aria-expanded="true">정보 접기</button><button type="button" data-atlas="fullscreen" aria-pressed="false">전체 화면</button></div></div><div class="atlas-layout"><section class="atlas-view"><div class="atlas-view-top"><span id="atlas-path"></span><div><button type="button" data-atlas="planet-return" hidden>행성으로</button><button type="button" data-atlas="back">← 이전</button></div></div><div class="atlas-canvas-wrap"><canvas id="atlas-canvas" aria-label="3D 우주 지도. 객체는 오른쪽 목록에서도 선택할 수 있습니다."></canvas><div id="atlas-labels"></div></div><div id="atlas-city-root" hidden></div><div class="atlas-view-bottom"><span>드래그 회전 · 휠 확대/축소 · 점 선택 <strong id="atlas-hover"></strong></span><label>입자 <select id="atlas-density"><option value="standard">기본</option><option value="high">많이</option></select></label><button type="button" data-atlas="zoom-in" aria-label="3D 지도 확대">+</button><button type="button" data-atlas="zoom-out" aria-label="3D 지도 축소">−</button><button type="button" data-atlas="reset">시점 초기화</button></div><p id="atlas-performance" class="atlas-performance" role="status">그래픽을 준비하는 중…</p></section><section class="atlas-list" aria-label="공간 탐색과 정보"><h2 class="atlas-info-heading">공간 정보</h2><label>이름 검색 <input id="atlas-search" placeholder="전체 공간 검색" autocomplete="off"></label><p id="atlas-list-label"></p><div id="atlas-rows"></div><div id="atlas-detail"></div><section class="passage-panel" aria-label="공간 통로"><h2>공간 통로</h2><p id="passage-caption"></p><label><input id="passage-enabled" type="checkbox" checked> 통로선 표시</label><div class="passage-filter"><label><input id="passage-galaxy" type="checkbox" checked> 은하 간</label><label><input id="passage-planet" type="checkbox" checked> 행성 간</label></div><label>상태 <select id="passage-status"><option value="all">전체</option><option value="open">개방</option><option value="restricted">제한</option><option value="closed">폐쇄</option><option value="unstable">불안정</option><option value="unknown">미확정</option></select></label><label>연결 강조 <select id="passage-object"><option value="">선택 안 함</option></select></label><small class="passage-legend"><span class="passage-open">● 개방</span> · <span class="passage-restricted">● 제한</span> · <span class="passage-closed">● 폐쇄</span> · <span class="passage-unstable">● 불안정</span> · <span class="passage-unknown">● 미확정</span><br>은하 간: 긴 점선 · 행성 간: 짧은 점선</small><div id="passage-list"></div><div id="passage-detail"></div></section></section></div>`;
   const $ = s => root.querySelector(s);
+  const clean = [], doc = root.ownerDocument || globalThis.document;
+  const listen = (element, type, fn, options) => {
+    element.addEventListener(type, fn, options);
+    clean.push(() => element.removeEventListener?.(type, fn, options));
+  };
+  const fullscreen = createAtlasFullscreen(root, {
+    onResize: () => renderer?.resize?.(), // The existing renderer also measures its canvas on every frame.
+    onChange: state => {
+      if (!doc) return;
+      const control = $('[data-atlas="fullscreen"]');
+      control.textContent = state.active ? '전체 화면 종료' : '전체 화면';
+      control.setAttribute('aria-pressed', String(state.active));
+      control.setAttribute('aria-label', state.mode === 'fallback' ? '화면 내부 최대화 종료' : state.active ? '전체 화면 종료' : '지도 전체 화면');
+    },
+  });
   function cancelApproach() { if(approach){const a=approach;approach=null;a.onfinish=null;a.cancel();} }
   const passageNames={open:'개방',restricted:'제한',closed:'폐쇄',unstable:'불안정',unknown:'미확정'};
   const passageArrow=p=>p.direction==='both'?'↔':p.direction==='one-way'?'→':'—';
@@ -68,7 +192,7 @@ export function mountAtlas(root, entities, relations = []) {
     const selected = nodes.find(n => n.id === (focusedId || parentId));
     const distances = selected && selected.demo && selected.type === 'galaxy' ? nodes.map(n => ({ n, distance: distanceBetween(selected, n) })).filter(x => x.distance) : [];
     const landmarks = selected?.demo ? selected.visual?.region?.landmarks || [] : [];
-    $('#atlas-detail').innerHTML = selected ? `<div class="atlas-selected"><strong>${escape(selected.name)}</strong><p>${escape(types[selected.type] || selected.type)} · ${escape(selected.demo ? '시험 데이터' : statusLabel(selected.canonStatus))}</p><small>${selected.coords ? `좌표 단위: ${escape(selected.unit || '미정')}` : '좌표·외형 미설정 · 지도상 위치를 표시하지 않습니다.'}</small>${focusedId ? '<p>행성에서 이 도시를 확대해 보고 있습니다.</p><button type="button" data-atlas="city-enter">가상 도시로 이동</button>' : ''}${distances.length ? `<p>가상 은하 간 거리</p>${distances.map(({n,distance}) => `<div>${escape(n.name)}: ${Math.round(distance.value).toLocaleString('ko-KR')} ${escape(distance.unit)}</div>`).join('')}` : ''}${landmarks.length ? `<p>가상 랜드마크</p>${landmarks.map(l=>`<div>${escape(l.name)}</div>`).join('')}` : ''}</div>` : '';
+    $('#atlas-detail').innerHTML = selected && !selected.demo ? renderAtlasRecordDetails(selected, archiveContext) : selected ? `<div class="atlas-selected"><strong>${escape(selected.name)}</strong><p>${escape(types[selected.type] || selected.type)} · ${escape(selected.demo ? '시험 데이터' : statusLabel(selected.canonStatus))}</p><small>${selected.coords ? `좌표 단위: ${escape(selected.unit || '미정')}` : '좌표·외형 미설정 · 지도상 위치를 표시하지 않습니다.'}</small>${focusedId ? '<p>행성에서 이 도시를 확대해 보고 있습니다.</p><button type="button" data-atlas="city-enter">가상 도시로 이동</button>' : ''}${distances.length ? `<p>가상 은하 간 거리</p>${distances.map(({n,distance}) => `<div>${escape(n.name)}: ${Math.round(distance.value).toLocaleString('ko-KR')} ${escape(distance.unit)}</div>`).join('')}` : ''}${landmarks.length ? `<p>가상 랜드마크</p>${landmarks.map(l=>`<div>${escape(l.name)}</div>`).join('')}` : ''}</div>` : '';
   }
   function update() {
     const parentId = path.at(-1) || null;
@@ -90,7 +214,8 @@ export function mountAtlas(root, entities, relations = []) {
       cityMap=mountCityMap($('#atlas-city-root'),selected,{mode,entities,relations,onSelect:record=>{
         const linked=record.passageId && passages.find(p=>p.id===record.passageId);
         if(linked){selectedPassage=linked.id;$('#passage-status').value='all';$('#passage-'+linked.level).checked=true;drawPassagePanel(null);}
-        $('#atlas-detail').innerHTML=`<div class="atlas-selected"><strong>${escape(record.name)}</strong><p>${escape(record.kind || '')}</p><small>ID: ${escape(record.objectId || record.id)}<br>${escape(record.relation || '')}${record.passageId ? `<br>연결 통로 ID: ${escape(record.passageId)}${linked?' · 통로 상세를 확인하세요':' · 연결 자료 없음 또는 확인 불가'}` : ''}</small></div>`;
+        const linkedRecord=mode==='real' && entities.find(item=>!item.deleted_at && item.id===(record.objectId || record.id));
+        $('#atlas-detail').innerHTML=linkedRecord ? renderAtlasRecordDetails(real.find(item=>item.id===linkedRecord.id) || {id:linkedRecord.id,type:'other'},archiveContext) : `<div class="atlas-selected"><strong>${escape(record.name)}</strong><p>${escape(record.kind || '')}</p><small>ID: ${escape(record.objectId || record.id)}<br>${escape(record.relation || '')}${record.passageId ? `<br>연결 통로 ID: ${escape(record.passageId)}${linked?' · 통로 상세를 확인하세요':' · 연결 자료 없음 또는 확인 불가'}` : ''}</small></div>`;
       }});
       $('#atlas-performance').textContent='2D 지도 · 3D 렌더링 중지';
       lastScene=null;hoveredObject=null;drawPassagePanel(null);
@@ -166,12 +291,19 @@ export function mountAtlas(root, entities, relations = []) {
       else if(!error) $('#atlas-performance').textContent=`${s.fps} FPS · 점 ${s.vertices}개 · 그리기 ${s.drawCalls}회`;
     }});
   } catch (e) { error = `3D 화면을 사용할 수 없습니다: ${e.message}. 목록 탐색은 가능합니다.`; $('#atlas-performance').textContent = error; $('#atlas-canvas').hidden = true; } }
-  root.addEventListener('click', e => {
+  listen(root,'click', e => {
     const route=e.target.closest('[data-passage-id]'); if(route){selectedPassage=route.dataset.passageId;drawPassagePanel(lastScene,true);return;}
     const marker=e.target.closest('[data-atlas-marker]'); if(marker){select(marker.dataset.atlasMarker,{marker:true});return;}
     const item=e.target.closest('[data-atlas-select]'); if(item){select(item.dataset.atlasSelect);return;}
     const action=e.target.closest('[data-atlas]')?.dataset.atlas;
-    if(action)cancelApproach();
+    if(action && !['fullscreen','info-toggle'].includes(action))cancelApproach();
+    if(action==='fullscreen') { void fullscreen.toggle(); return; }
+    if(action==='info-toggle') {
+      const collapsed=root.classList?.toggle('atlas-info-collapsed');
+      e.target.closest('[data-atlas]').textContent=collapsed?'정보 펼치기':'정보 접기';
+      e.target.closest('[data-atlas]').setAttribute('aria-expanded',String(!collapsed));
+      fullscreen.resize();return;
+    }
     if(action==='back'){if(focusedId){focusedId=null;renderer?.clearFocus();$('#atlas-path').textContent=['우주',...path.map(x=>nodes.find(n=>n.id===x)?.name)].join('  ›  ');drawList();}else if(surfaceOrigin && path.at(-1)===surfaceOrigin.cityId){const origin=surfaceOrigin;surfaceOrigin=null;path=origin.path;focusedId=origin.cityId;update();renderer?.setViewState(origin.view);}else{path.pop();update();}}
     if(action==='planet-return'){const target=planetPathForCity(nodes,path.at(-1));if(target){const origin=surfaceOrigin;surfaceOrigin=null;path=target;focusedId=origin?.cityId || null;update();if(origin)renderer?.setViewState(origin.view);}}
     if(action==='zoom-in')renderer?.zoomBy(.8);
@@ -180,10 +312,13 @@ export function mountAtlas(root, entities, relations = []) {
     if(action==='city-enter' && focusedId){surfaceOrigin={path:[...path],cityId:focusedId,view:renderer?.getViewState()};path=ancestry(nodes,focusedId);focusedId=null;update();}
     if(action==='real'||action==='demo'){mode=action; nodes=mode==='demo'?makeDemo():real;passages=adaptPassages(nodes,mode==='demo'?makeDemoPassages():[]);selectedPassage=null;selectedObject=null;hoveredObject=null;path=[];focusedId=null;surfaceOrigin=null;query='';$('#atlas-search').value='';update();}
   });
-  $('#atlas-search').addEventListener('input', e => {cancelApproach();query=e.target.value.trim();drawList();});
-  $('#atlas-density').addEventListener('change', e => {cancelApproach();focusedId=null;renderer?.setDensity(e.target.value);update();});
-  for(const id of ['passage-enabled','passage-galaxy','passage-planet','passage-status'])$('#'+id).addEventListener('change',()=>drawPassagePanel(lastScene,true));
-  $('#passage-object').addEventListener('change',e=>{selectedObject=e.target.value || null;drawPassagePanel(lastScene,true);});
-  update();
-  return () => { cancelApproach();cityMap?.dispose();renderer?.dispose(); };
+  listen($('#atlas-search'),'input', e => {cancelApproach();query=e.target.value.trim();drawList();});
+  listen($('#atlas-density'),'change', e => {cancelApproach();focusedId=null;renderer?.setDensity(e.target.value);update();});
+  for(const id of ['passage-enabled','passage-galaxy','passage-planet','passage-status'])listen($('#'+id),'change',()=>drawPassagePanel(lastScene,true));
+  listen($('#passage-object'),'change',e=>{selectedObject=e.target.value || null;drawPassagePanel(lastScene,true);});
+  // Existing archive reference links may enter Space at a specific object.
+  // Only real projected records qualify; unknown/demo IDs cannot switch modes.
+  if (real.some(node => node.id === context.initialSelectionId)) select(context.initialSelectionId);
+  else update();
+  return () => { cancelApproach();fullscreen.dispose();for(const remove of clean)remove();cityMap?.dispose();renderer?.dispose();root.classList?.remove('atlas-workspace','atlas-info-collapsed'); };
 }

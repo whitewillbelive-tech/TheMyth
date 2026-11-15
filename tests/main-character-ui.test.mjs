@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { CATALOG, catalogKey, catalogStatus } from '../web/main-domain.js';
+import { CATALOG, catalogKey, catalogStatus, workspaceUpgradeStatus } from '../web/main-domain.js';
 
 // Execute the production modal/read/submit handlers with parsed form controls.
 // This fixture models form successful-controls and event wiring, not browser
@@ -12,7 +12,7 @@ class Node {
   constructor(tag = 'div', attrs = {}, parent = null) {
     this.tagName=tag;this.attrs=attrs;this.parent=parent;this.children=[];this.events={};
     this.dataset=Object.fromEntries(Object.entries(attrs).filter(([key])=>key.startsWith('data-')).map(([key,value])=>[key.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()),value]));
-    this.disabled=Object.hasOwn(attrs,'disabled');this.hidden=Object.hasOwn(attrs,'hidden');this.checked=Object.hasOwn(attrs,'checked');this.selected=Object.hasOwn(attrs,'selected');
+    this.style={};this.disabled=Object.hasOwn(attrs,'disabled');this.hidden=Object.hasOwn(attrs,'hidden');this.checked=Object.hasOwn(attrs,'checked');this.selected=Object.hasOwn(attrs,'selected');
     const classes=new Set((attrs.class||'').split(/\s+/).filter(Boolean));
     this.classList={toggle:(name,value)=>{const on=value??!classes.has(name);on?classes.add(name):classes.delete(name);},add:name=>classes.add(name),remove:name=>classes.delete(name),contains:name=>classes.has(name)};
   }
@@ -106,12 +106,12 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
     const method=options.method||'GET',body=options.body?JSON.parse(options.body):undefined;requests.push({path,method,body});
     let status=200,result;
     if(path==='/api/state')result=structuredClone(fixture);
-    else if(path==='/api/catalog/reconcile'){
+    else if(path==='/api/workspace/upgrade-generation-model'){
       status=reconcileStatus;if(status<300||concurrentReady)fixture=readyState();
       result=status<300?{unchanged:false}:{detail:'동시에 등록되었습니다.'};
     }else if(path==='/api/characters'){
-      const character={id:'created-person',revision:1,...body,kind:'character'};delete character.title_ids;delete character.title_settings;
-      fixture.entities.push(character);result={character,appearances:[]};
+      const character={id:'created-person',revision:1,...body,kind:'character',data:{...body.data,generation_model_version:1}};delete character.title_ids;delete character.title_settings;delete character.generation_ids;delete character.generation_settings;
+      fixture.entities.push(character);const generation_appearances=(body.generation_ids||[]).map(id=>({id:'created-generation-'+id,source_id:character.id,target_id:id,type:'generation_appearance',revision:1,data:{generation_schema:1,...body.generation_settings?.[id]}}));fixture.relations.push(...generation_appearances);result={character,appearances:[],generation_appearances};
     }else if(path.startsWith('/api/entities/')&&method==='PATCH'){
       const id=path.split('/').at(-1);result={...fixture.entities.find(row=>row.id===id),...body};fixture.entities=fixture.entities.map(row=>row.id===id?result:row);
     }else throw new Error(`Unexpected fixture request ${method} ${path}`);
@@ -121,7 +121,9 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
     let source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
     source=source.replace('"/atlas-view.js"',JSON.stringify('data:text/javascript,export const mountAtlas=()=>()=>{};'))
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
-      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href));
+      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
+      .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
     const boot=source.lastIndexOf('\ntry {\n  await refresh');assert.ok(boot>0,'Application bootstrap must be present');
     // Rendering has separate navigation coverage. Keep bootstrap and actual
     // dialogs untouched while suppressing layout work in this form fixture.
@@ -131,15 +133,14 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
   }finally{for(const key of keys)if(old[key]===undefined)delete globalThis[key];else globalThis[key]=old[key];}
 }
 const control=(form,name)=>{const item=form.elements.namedItem(name);assert.ok(item,`Missing ${name}`);return item;};
-const titleCheckbox=(form,id)=>form.querySelectorAll('input[name="title_ids"]').find(item=>item.value===id);
-const slot=(form,id)=>form.querySelector(`[data-new-character-slot="${id}"]`);
-const panel=(form,id)=>form.querySelector(`[data-new-character-panel="${id}"]`);
+const generationCheckbox=(form,id)=>form.querySelectorAll('input[name="generation_ids"]').find(item=>item.value===id);
+const generationPanel=(form,id)=>form.querySelector(`[data-new-generation-panel="${id}"]`);
 
 test('initial missing catalog is registered once after a read, while later refreshes are read-only',async()=>{
   const initial=readyState();initial.entities=initial.entities.filter(row=>row.kind==='planet');
   await application(async({app,requests})=>{
-    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/catalog/reconcile'],['GET','/api/state']]);
-    assert.equal(catalogStatus(app.runtime().db).initialized,true);
+    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state']]);
+    assert.equal(catalogStatus(app.runtime().db).initialized,true);assert.equal(workspaceUpgradeStatus(app.runtime().db).needsUpgrade,false);
     await app.refresh(false);
     assert.equal(requests.filter(row=>row.method==='POST').length,1);
   },{initial});
@@ -149,8 +150,8 @@ test('ready catalog opens without writes and concurrent registration needs only 
   await application(async({requests})=>assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state']]));
   const initial=readyState();initial.entities=[];
   await application(async({app,requests,doc})=>{
-    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/catalog/reconcile'],['GET','/api/state']]);
-    assert.equal(catalogStatus(app.runtime().db).initialized,true);
+    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state']]);
+    assert.equal(catalogStatus(app.runtime().db).initialized,true);assert.equal(workspaceUpgradeStatus(app.runtime().db).needsUpgrade,false);
     assert.equal(doc.querySelector('#toast').textContent,'');
   },{initial,reconcileStatus:409});
   await application(async({requests,doc})=>{
@@ -159,67 +160,74 @@ test('ready catalog opens without writes and concurrent registration needs only 
   },{initial,reconcileStatus:409,concurrentReady:false});
 });
 
-test('new character uses its own optional form and submits an unfinished identity with no classification controls',async()=>{
+test('new character uses its own optional generation form and submits an unfinished identity without classification controls',async()=>{
   await application(async({app,doc,requests})=>{
-    app.context({view:'character',mainTitle:''});app.newEntity();
+    app.context({view:'character',mainGeneration:'g1',mainTitle:''});app.newEntity();
     const form=doc.querySelector('#dialog-form');assert.ok(form);
-    assert.equal(form.querySelector('select[name="kind"]'),null);
-    assert.equal(control(form,'kind').type,'hidden');assert.equal(control(form,'kind').value,'character');
-    for(const name of ['data_subtype','data_civilization_id','data_species'])assert.equal(form.elements.namedItem(name),null,name);
-    assert.ok(form.elements.namedItem('data_origin_planet_id'));
+    assert.equal(form.querySelector('select[name="kind"]'),null);assert.equal(form.elements.namedItem('kind'),null);
+    for(const name of ['data_subtype','data_civilization_id','data_species','data_origin_planet_id'])assert.equal(form.elements.namedItem(name),null,name);
+    assert.ok(form.elements.namedItem('origin_planet_id'));
     assert.equal(form.querySelectorAll('[required]').length,0);
-    for(const item of form.elements)if(['input','textarea'].includes(item.tagName)&&item.type!=='hidden'&&item.type!=='checkbox'&&item.name!=='custom_data')item.value='';
+    for(const item of form.elements){
+      if(item.type==='checkbox')item.checked=false;
+      else if(['input','textarea'].includes(item.tagName)&&item.type!=='hidden')item.value='';
+    }
     await form.fire('submit');
     const request=requests.find(row=>row.path==='/api/characters');assert.ok(request);
     assert.equal(request.body.name,'이름 미정');assert.equal(request.body.kind,'character');
-    assert.deepEqual(request.body.title_ids,[]);assert.deepEqual(request.body.title_settings,{});
-    assert.equal(request.body.description,'');assert.equal(request.body.data.role,'');assert.equal(request.body.data.notes,'');
-    assert.deepEqual(request.body.data.aliases,[]);assert.equal(request.body.data.origin_planet_id,null);
+    assert.deepEqual(request.body.generation_ids,[]);assert.deepEqual(request.body.generation_settings,{});
+    assert.equal(request.body.description,'');assert.equal(request.body.data.ideology,'');assert.equal(request.body.data.primary_power,'');
+    assert.equal(request.body.data.character_narrative,'');assert.equal(request.body.data.origin_planet_id,null);
+    assert.deepEqual(request.body.data.mbti,{ei:null,sn:null,tf:null,jp:null});
     assert.equal(doc.querySelector('#dialog').open,false);
   });
 });
 
-test('creation title slots retain typed drafts across switches and submit sparse per-title values',async()=>{
-  await application(async({app,doc,requests,storage})=>{
-    app.context({view:'character',mainTitle:''});app.newCharacter();
-    const form=doc.querySelector('#dialog-form'),a='t1-0',b='t2-0';
-    titleCheckbox(form,a).checked=true;titleCheckbox(form,b).checked=true;await form.fire('change');
-    assert.equal(slot(form,a).hidden,false);assert.equal(slot(form,b).hidden,false);
-    assert.equal(form.querySelectorAll('input[name="title_ids"]').length,10);
-    slot(form,a).onclick();assert.equal(panel(form,a).hidden,false);assert.equal(panel(form,'common').hidden,true);
-    control(form,`newtitle_${a}_mode_role`).value='custom';control(form,`newtitle_${a}_mode_notes`).value='custom';await form.fire('change');
-    control(form,`newtitle_${a}_profile_role`).value='Earth 역할';control(form,`newtitle_${a}_profile_notes`).value='';await form.fire('input');
-    slot(form,b).onclick();control(form,`newtitle_${b}_mode_role`).value='custom';await form.fire('change');
-    control(form,`newtitle_${b}_profile_role`).value='Universe 역할';await form.fire('input');
-    slot(form,'common').onclick();control(form,'name').value='공통 인물';control(form,'data_role').value='공통 역할';await form.fire('input');
-    slot(form,a).onclick();assert.equal(control(form,`newtitle_${a}_profile_role`).value,'Earth 역할');
-    titleCheckbox(form,a).checked=false;await form.fire('change');assert.equal(panel(form,'common').hidden,false);
-    titleCheckbox(form,a).checked=true;await form.fire('change');slot(form,a).onclick();
-    assert.equal(control(form,`newtitle_${a}_profile_role`).value,'Earth 역할','temporarily unchecked slots retain content');
-    assert.deepEqual(JSON.parse(storage.get('myth-drafts'))['new:character'].title_ids,[a,b]);
+test('creation generation panels retain drafts when unchecked and save independent narratives without changing old title profiles',async()=>{
+  const initial=readyState();
+  initial.entities.push({id:'existing-person',kind:'character',name:'기존 인물',revision:2,data:{generation_model_version:1}});
+  const legacy={id:'legacy-title-profile',type:'appearance',source_id:'existing-person',target_id:'t1-0',revision:3,data:{overrides:{role:'기존 타이틀별 역할',notes:'보존할 원문'}}};
+  initial.relations.push(legacy);initial.groups.push({id:'group-a',name:'첫 집단'},{id:'group-b',name:'다른 집단'});
+  await application(async({app,doc,requests,storage,fixture})=>{
+    app.context({view:'character',mainGeneration:'g1',mainTitle:''});app.newCharacter();
+    const form=doc.querySelector('#dialog-form'),a='g1',b='g2';
+    assert.equal(form.querySelectorAll('input[name="generation_ids"]').length,3);
+    generationCheckbox(form,b).checked=true;await form.fire('change');
+    assert.equal(generationPanel(form,a).hidden,false);assert.equal(generationPanel(form,b).hidden,false);
+    control(form,'name').value='공통 인물';control(form,'ideology').value='공통 신념';control(form,'character_narrative').value='전체 인물 서사';
+    control(form,`generation_${a}_ideology_rank`).value='첫 세대 자유 등급';control(form,`generation_${a}_narrative`).value='Earth 개별 서사';
+    control(form,`generation_${b}_narrative`).value='Universe 개별 서사';
+    control(form,`generation_${a}_affiliations`).options.find(option=>option.value==='groups:group-a').selected=true;
+    control(form,`generation_${b}_affiliations`).options.find(option=>option.value==='groups:group-b').selected=true;
+    await form.fire('input');
+    generationCheckbox(form,a).checked=false;await form.fire('change');assert.equal(generationPanel(form,a).hidden,true);
+    generationCheckbox(form,a).checked=true;await form.fire('change');assert.equal(generationPanel(form,a).hidden,false);
+    assert.equal(control(form,`generation_${a}_narrative`).value,'Earth 개별 서사');
+    assert.deepEqual(JSON.parse(storage.get('myth-drafts'))['new:generation-character'].raw.generation_ids,[a,b]);
     await form.fire('submit');
     const body=requests.find(row=>row.path==='/api/characters').body;
-    assert.equal(body.data.role,'공통 역할');assert.deepEqual(body.title_ids,[a,b]);
-    assert.deepEqual(body.title_settings[a].overrides,{role:'Earth 역할',notes:''});
-    assert.deepEqual(body.title_settings[b].overrides,{role:'Universe 역할'});
-    assert.ok(body.title_settings[a].inherit_fields.includes('name'));
-    assert.equal(Object.hasOwn(body.title_settings[a].overrides,'name'),false);
-    assert.equal(storage.get('myth-drafts'),'{}','successful creation clears its local draft');
-  });
+    assert.deepEqual(body.generation_ids,[a,b]);assert.equal(body.data.ideology,'공통 신념');assert.equal(body.data.character_narrative,'전체 인물 서사');
+    assert.equal(body.generation_settings[a].narrative,'Earth 개별 서사');assert.equal(body.generation_settings[b].narrative,'Universe 개별 서사');
+    assert.deepEqual(body.generation_settings[a].affiliations,[{collection:'groups',id:'group-a'}]);assert.deepEqual(body.generation_settings[b].affiliations,[{collection:'groups',id:'group-b'}]);
+    assert.deepEqual(fixture().relations.find(row=>row.id===legacy.id),legacy);
+    assert.equal(storage.get('myth-drafts'),'{}','successful creation clears only its completed draft');
+  },{initial});
 });
 
 test('each creation context fixes its record kind instead of exposing a generic classification picker',async()=>{
   await application(async({app,doc})=>{
-    for(const [view,kind] of [['organization','organization'],['civilization','civilization'],['event','event'],['setting','setting'],['spaces','space']]){
+    for(const [view,kind] of [['organization','organization'],['civilization','civilization'],['event','event'],['setting','setting']]){
       app.context({view});app.newEntity();const form=doc.querySelector('#dialog-form');
       assert.equal(control(form,'kind').value,kind,view);assert.equal(control(form,'kind').type,'hidden',view);
       assert.equal(form.querySelector('select[name="kind"]'),null,view);
     }
+    app.context({view:'spaces'});assert.throws(()=>app.newEntity(),/Work/,'ordinary Site space creation is unavailable');
+    assert.throws(()=>app.newEntity('planet'),/Work/,'ordinary Site planet creation is unavailable');
   });
 });
 
 test('editing the simplified character form preserves hidden legacy origin and subtype values',async()=>{
-  const initial=readyState(),legacy={id:'legacy-person',kind:'character',name:'기존 인물',revision:7,data:{origin_planet_id:'planet',civilization_id:'legacy-civilization',species:'기존 종족',subtype:'기존 세부 분류',extension:{keep:true}}};
+  const initial=readyState(),legacy={id:'legacy-person',kind:'character',name:'기존 인물',revision:7,data:{generation_model_version:1,origin_planet_id:'planet',civilization_id:'legacy-civilization',species:'기존 종족',subtype:'기존 세부 분류',extension:{keep:true}}};
   initial.entities.push(legacy,{id:'legacy-civilization',kind:'civilization',name:'기존 문명',data:{}});
   await application(async({app,doc,requests})=>{
     doc.querySelector('#app').innerHTML=`<form id="entity-form" data-id="${legacy.id}">${app.entityFields(legacy)}</form>`;

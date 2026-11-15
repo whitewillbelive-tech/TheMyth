@@ -5,7 +5,7 @@ import { CATALOG, catalogKey } from '../web/main-domain.js';
 import { adaptWorld, childrenFor } from '../web/atlas-data.js';
 import { cityData } from '../web/atlas-city-map.js';
 
-// Execute the production modal/read/submit handlers with parsed form controls.
+// Execute production navigation, readonly-space routing, and stale-action guards.
 // This fixture models form successful-controls and event wiring, not browser
 // layout, browser constraint validation, WebGL, or real network authentication.
 const decode = value => String(value).replace(/&(amp|lt|gt|quot|#39);/g, (_, code) => ({ amp:'&', lt:'<', gt:'>', quot:'"', '#39':"'" })[code]);
@@ -98,9 +98,10 @@ function readyState(){
 }
 let importNumber=0;
 async function application(run,{initial=readyState(),reconcileStatus=200,concurrentReady=true}={}){
-  const keys=['document','window','localStorage','fetch','FormData','setTimeout','clearTimeout'];
-  const old=Object.fromEntries(keys.map(key=>[key,globalThis[key]])),doc=new Document(),storage=new Map(),requests=[];
+  const keys=['document','window','localStorage','fetch','FormData','setTimeout','clearTimeout','__spaceAtlasMount'];
+  const old=Object.fromEntries(keys.map(key=>[key,globalThis[key]])),doc=new Document(),storage=new Map(),requests=[],atlasMounts=[];
   let fixture=structuredClone(initial);
+  globalThis.__spaceAtlasMount=(root,entities,relations,context)=>{const mount={root,entities,relations,context,disposed:false};atlasMounts.push(mount);root.innerHTML='<p>읽기 전용 Atlas</p>';return()=>{mount.disposed=true;};};
   globalThis.document=doc;globalThis.window={addEventListener(){}};
   globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,String(value))};
   globalThis.FormData=FormDataFixture;globalThis.setTimeout=()=>0;globalThis.clearTimeout=()=>{};
@@ -123,21 +124,21 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
   };
   try {
     let source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
-    source=source.replace('"/atlas-view.js"',JSON.stringify('data:text/javascript,export const mountAtlas=()=>()=>{};'))
+    source=source.replace('"/atlas-view.js"',JSON.stringify('data:text/javascript,export const mountAtlas=(...args)=>globalThis.__spaceAtlasMount(...args);'))
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
-      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href));
+      .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
+      .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
     const boot=source.lastIndexOf('\ntry {\n  await refresh');assert.ok(boot>0,'Application bootstrap must be present');
     // Rendering has separate navigation coverage. Keep bootstrap and actual
     // dialogs untouched while suppressing layout work in this form fixture.
-    source=source.slice(0,boot)+'\nrender=()=>{};\n'+source.slice(boot)+`\nexport {newSpace,newEntity,entityFields,readEntity,bindForms,refresh,archive,shell,spaceTree,baseEntityDetail};export const context=value=>Object.assign(ui,value);export const runtime=()=>({db,ui,localDrafts});\n// spatial form test ${++importNumber}`;
+    source=source.slice(0,boot)+'\nconst renderActualSpace=render;render=()=>{};\n'+source.slice(boot)+`\nexport {newSpace,newEntity,entityFields,entityDetail,readEntity,bindForms,refresh,archive,shell,spaceTree,spatialReadOnlyDetail,renderActualSpace};export const context=value=>Object.assign(ui,value);export const runtime=()=>({db,ui,localDrafts});\n// spatial form test ${++importNumber}`;
     const app=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
-    await run({app,doc,requests,storage,fixture:()=>fixture});
+    await run({app,doc,requests,storage,atlasMounts,fixture:()=>fixture});
   }finally{for(const key of keys)if(old[key]===undefined)delete globalThis[key];else globalThis[key]=old[key];}
 }
-const control=(form,name)=>{const item=form.elements.namedItem(name);assert.ok(item,`Missing ${name}`);return item;};
 const fragment=html=>{const root=new Node();root.innerHTML=html;return root;};
 async function click(doc,node){assert.ok(node,'Missing action button');for(const handler of doc.events.click||[])await handler({target:node,preventDefault(){}});}
-const action=(html,id)=>fragment(html).querySelector(`[data-action="new-space"][data-id="${id}"]`);
 function legacyState(){
   const fixture=readyState();
   fixture.entities=fixture.entities.filter(row=>row.id!=='planet');
@@ -150,78 +151,63 @@ function legacyState(){
   return fixture;
 }
 
-test('space navigation exposes the galaxy hierarchy and hides only the legacy universe container without rewriting it',async()=>{
+test('space navigation enters the readonly Atlas directly with all global records and no intermediate editing screen',async()=>{
   const initial=legacyState(),before=structuredClone(initial);
-  await application(async({app,requests})=>{
-    app.context({view:'spaces',tab:'main',mainTitle:'',includeCommon:true,query:'',kind:'',group:''});
+  await application(async({app,doc,requests,atlasMounts})=>{
+    app.context({view:'spaces',tab:'main',mainGeneration:'g2',mainTitle:'',includeCommon:false,query:'',kind:'',group:''});
     const shell=fragment(app.shell());
-    assert.ok(shell.querySelector('[data-action="view"][data-id="spaces"]'));
     assert.equal(shell.querySelector('[data-action="view"][data-id="spaces"]').textContent,'공간');
     assert.equal(app.shell().includes('우주 공간'),false);
-    const html=app.archive();
-    const tree=fragment(html);
-    assert.equal(tree.querySelector('[data-action="select"][data-id="legacy-universe"]'),null);
-    for(const id of ['legacy-galaxy','legacy-planet','legacy-city'])assert.ok(tree.querySelector(`[data-action="select"][data-id="${id}"]`));
-    assert.equal(tree.querySelector('[data-action="select"][data-id="legacy-galaxy"]').attrs.style,'padding-left:20px');
-    assert.equal(tree.querySelector('[data-action="select"][data-id="legacy-city"]').attrs.style,'padding-left:52px');
-    assert.ok(action(html,'planet|legacy-galaxy'));assert.ok(action(html,'city|legacy-planet'));
-    assert.ok(action(app.archive(),'galaxy|'));
-    assert.ok(action(app.baseEntityDetail(app.runtime().db.entities.find(row=>row.id==='legacy-galaxy')),'planet|legacy-galaxy'));
-    assert.ok(action(app.baseEntityDetail(app.runtime().db.entities.find(row=>row.id==='legacy-planet')),'city|legacy-planet'));
+    app.renderActualSpace();
+    const page=doc.querySelector('#page');
+    assert.ok(page.querySelector('#atlas-root'),'Space mounts the Atlas as its primary content');
+    assert.equal(atlasMounts.length,1);
+    const mounted=atlasMounts[0];
+    assert.equal(mounted.root,page.querySelector('#atlas-root'));
+    assert.deepEqual(mounted.entities,before.entities,'Space uses one global archive rather than generation copies');
+    assert.deepEqual(mounted.relations,before.relations);
+    assert.deepEqual(mounted.context.groups,before.groups);assert.deepEqual(mounted.context.memberships,before.memberships);
+    assert.equal(page.querySelector('.split-view'),null,'there is no intermediate spatial archive editor');
+    assert.equal(page.querySelector('form'),null);
+    for(const action of ['new-space','new-entity','delete-entity','edit-entity']) assert.equal(page.querySelector(`[data-action="${action}"]`),null);
+    app.context({view:'spaces',mainGeneration:'g3'});app.renderActualSpace();
+    assert.equal(atlasMounts[0].disposed,true,'switching the outer workspace disposes the previous viewer');
+    assert.equal(atlasMounts.length,2);assert.deepEqual(atlasMounts[1].entities,before.entities);
     assert.deepEqual(app.runtime().db.entities,before.entities);
-    assert.equal(requests.some(row=>row.method!=='GET'),false,'projecting the spatial hierarchy cannot modify records');
+    assert.equal(requests.some(row=>row.method!=='GET'),false,'opening and generation navigation cannot write space records');
   },{initial});
 });
 
-test('actual contextual create actions persist one galaxy, its planet and its city with Atlas-compatible identities',async()=>{
-  const initial=legacyState(),before=structuredClone(initial.entities);
+test('stale spatial creation calls and removed creation actions fail before any request or modal',async()=>{
   await application(async({app,doc,requests,fixture})=>{
-    app.context({view:'spaces',tab:'main',mainTitle:'',includeCommon:true,query:'',kind:'',group:''});
-    await click(doc,action(app.archive(),'galaxy|'));
-    let form=doc.querySelector('#dialog-form');
-    assert.match(form.textContent,/새 은하/);control(form,'name').value='새 은하';
-    assert.equal(form.querySelector('select[name="kind"]'),null);
-    await form.fire('submit');
-    const galaxy=fixture().entities.find(row=>row.name==='새 은하');assert.ok(galaxy);
-    assert.equal(galaxy.kind,'space');assert.equal(galaxy.data.subtype,'galaxy');assert.equal(galaxy.data.parent_id,null);
-    await click(doc,action(app.spaceTree(app.runtime().db.entities.filter(row=>['space','planet'].includes(row.kind))),`planet|${galaxy.id}`));
-    form=doc.querySelector('#dialog-form');assert.match(form.textContent,/새 행성/);
-    const parent=control(form,'data_parent_id');
-    assert.equal(parent.value,galaxy.id);assert.ok(parent.options.some(row=>row.value==='legacy-galaxy'));
-    assert.equal(parent.options.some(row=>['legacy-universe','legacy-planet','legacy-city'].includes(row.value)),false);
-    control(form,'name').value='새 행성';await form.fire('submit');
-    const planet=fixture().entities.find(row=>row.name==='새 행성');assert.ok(planet);
-    assert.equal(planet.kind,'planet');assert.equal(planet.data.parent_id,galaxy.id);
-    await click(doc,action(app.baseEntityDetail(planet),`city|${planet.id}`));
-    form=doc.querySelector('#dialog-form');assert.match(form.textContent,/새 도시/);
-    assert.equal(control(form,'data_parent_id').value,planet.id);
-    assert.equal(control(form,'data_parent_id').options.some(row=>['legacy-universe','legacy-galaxy','legacy-city',galaxy.id].includes(row.value)),false);
-    control(form,'name').value='새 도시';await form.fire('submit');
-    const city=fixture().entities.find(row=>row.name==='새 도시');assert.ok(city);
-    assert.equal(city.kind,'space');assert.equal(city.data.subtype,'city');assert.equal(city.data.parent_id,planet.id);
-    const writes=requests.filter(row=>row.path==='/api/entities'&&row.method==='POST');assert.equal(writes.length,3);
-    assert.equal(writes.some(row=>row.body.data.subtype==='universe'),false);
-    for(const old of before)assert.deepEqual(fixture().entities.find(row=>row.id===old.id),old);
-    const snapshot=structuredClone(fixture().entities),nodes=adaptWorld(fixture().entities);
-    assert.equal(nodes.find(row=>row.id===galaxy.id).type,'galaxy');
-    assert.equal(childrenFor(nodes,galaxy.id).find(row=>row.id===planet.id).type,'planet');
-    assert.equal(childrenFor(nodes,planet.id).find(row=>row.id===city.id).type,'city');
-    assert.deepEqual(fixture().entities,snapshot);
-    assert.ok(nodes.every(row=>row.coords===null),'creation must not invent map coordinates');
-  },{initial});
+    const before=structuredClone(fixture());
+    app.context({view:'spaces',tab:'main'});
+    for(const level of ['galaxy','planet','city']) assert.throws(()=>app.newSpace(level,'legacy-galaxy'),/읽기 전용|Site에서 편집|Work/);
+    for(const kind of ['space','planet']) assert.throws(()=>app.newEntity(kind),/읽기 전용|Site에서 편집|Work/);
+    const stale=fragment('<button data-action="new-space" data-id="galaxy|">옛 생성 버튼</button>').querySelector('button');
+    const errors=[],report=console.error;
+    try { console.error=error=>errors.push(error);await click(doc,stale); }
+    finally { console.error=report; }
+    assert.equal(errors.length,1);assert.match(errors[0].message,/Site에서 편집|Work/);
+    assert.equal(doc.querySelector('#dialog-form'),null,'stale handlers do not open an editing form');
+    assert.equal(requests.some(row=>row.method!=='GET'),false);
+    assert.deepEqual(fixture(),before);
+  },{initial:legacyState()});
 });
 
-test('legacy universe-parented galaxies retain their stored parent when edited through the simplified form',async()=>{
-  const initial=legacyState(),galaxy=initial.entities.find(row=>row.id==='legacy-galaxy');
-  await application(async({app,doc,requests})=>{
-    doc.querySelector('#app').innerHTML=`<form id="entity-form" data-id="${galaxy.id}">${app.entityFields(galaxy)}</form>`;
-    const form=doc.querySelector('#entity-form');
-    assert.equal(form.querySelector('select[name="kind"]'),null);
-    if(form.elements.namedItem('data_parent_id'))assert.equal(control(form,'data_parent_id').value,'legacy-universe');
-    control(form,'description').value='은하 설명만 수정';app.bindForms();await form.fire('submit');
-    const body=requests.find(row=>row.method==='PATCH').body;
-    assert.equal(body.data.parent_id,'legacy-universe');assert.equal(body.data.subtype,'은하');
-    assert.deepEqual(body.data.extension,{keep:true});assert.equal(body.description,'은하 설명만 수정');
+test('space detail references remain readonly and preserve legacy universe parents and arbitrary saved facts',async()=>{
+  const initial=legacyState(),before=structuredClone(initial.entities);
+  await application(async({app,requests})=>{
+    for(const record of app.runtime().db.entities.filter(row=>['space','planet'].includes(row.kind))){
+      const detail=fragment(app.entityDetail(record));
+      assert.match(detail.textContent,/READ ONLY|읽기 전용|Work/);
+      assert.equal(detail.querySelector('form'),null);assert.equal(detail.querySelector('input'),null);assert.equal(detail.querySelector('textarea'),null);
+      for(const action of ['new-space','new-entity','delete-entity','edit-entity','split','merge']) assert.equal(detail.querySelector(`[data-action="${action}"]`),null);
+    }
+    const galaxy=app.runtime().db.entities.find(row=>row.id==='legacy-galaxy'),html=app.entityDetail(galaxy);
+    assert.ok(html.includes('legacy-universe'));assert.ok(html.includes('기존 최상위 기록'));assert.ok(html.includes('&quot;keep&quot;: true'));
+    assert.deepEqual(app.runtime().db.entities,before);
+    assert.equal(requests.some(row=>row.method!=='GET'),false);
   },{initial});
 });
 

@@ -109,7 +109,7 @@ class MainWorkspaceTests(unittest.TestCase):
         result = self.catalog()
         self.assertEqual(len(result["created_ids"]), 6)
         self.assertEqual([row["name"] for row in result["generations"]], ["Earth", "Universe", "Heaven"])
-        self.assertEqual([row["name"] for row in result["titles"]], ["위버멘쉬", "마몬", "아나키", "랑데부", "올쳐", "브이젯", "흑과 백의 서신", "영웅과 용사의 길", "체라", "월계 전쟁"])
+        self.assertEqual([row["name"] for row in result["titles"]], ["위버멘쉬", "마몬", "아나키", "랑데부", "올쳐", "브이젯", "흑과 백의 서신", "영웅과 용사의 길", "월계 전쟁", "체라"])
         self.assertEqual(self.record("entities", "generation-undecided")["id"], old_generation["id"])
         self.assertEqual(self.record("entities", extra["id"]), extra)
         self.assertEqual(self.record("documents", document["id"]), document)
