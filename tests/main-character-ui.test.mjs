@@ -107,6 +107,7 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
     const method=options.method||'GET',body=options.body?JSON.parse(options.body):undefined;requests.push({path,method,body});
     let status=200,result;
     if(path==='/api/state')result=structuredClone(fixture);
+    else if(path==='/api/works/time')result={work:{id:'registered-time-work'},expected_write_revision:'fixture'};
     else if(path==='/api/workspace/upgrade-generation-model'){
       status=reconcileStatus;if(status<300||concurrentReady)fixture=readyState();
       result=status<300?{unchanged:false}:{detail:'동시에 등록되었습니다.'};
@@ -124,7 +125,8 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
       .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
       .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
-      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href))
+      .replace('"/time-initialization.js"',JSON.stringify(new URL('../web/time-initialization.js',import.meta.url).href));
     const boot=source.lastIndexOf('\ntry {\n  await refresh');assert.ok(boot>0,'Application bootstrap must be present');
     // Rendering has separate navigation coverage. Keep bootstrap and actual
     // dialogs untouched while suppressing layout work in this form fixture.
@@ -140,7 +142,7 @@ const generationPanel=(form,id)=>form.querySelector(`[data-new-generation-panel=
 test('initial missing catalog is registered once after a read, while later refreshes are read-only',async()=>{
   const initial=readyState();initial.entities=initial.entities.filter(row=>row.kind==='planet');
   await application(async({app,requests})=>{
-    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state']]);
+    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state'],['GET','/api/works/time']]);
     assert.equal(catalogStatus(app.runtime().db).initialized,true);assert.equal(workspaceUpgradeStatus(app.runtime().db).needsUpgrade,false);
     await app.refresh(false);
     assert.equal(requests.filter(row=>row.method==='POST').length,1);
@@ -148,15 +150,15 @@ test('initial missing catalog is registered once after a read, while later refre
 });
 
 test('ready catalog opens without writes and concurrent registration needs only one recovery read',async()=>{
-  await application(async({requests})=>assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state']]));
+  await application(async({requests})=>assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['GET','/api/works/time']]));
   const initial=readyState();initial.entities=[];
   await application(async({app,requests,doc})=>{
-    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state']]);
+    assert.deepEqual(requests.map(row=>[row.method,row.path]),[['GET','/api/state'],['POST','/api/workspace/upgrade-generation-model'],['GET','/api/state'],['GET','/api/works/time']]);
     assert.equal(catalogStatus(app.runtime().db).initialized,true);assert.equal(workspaceUpgradeStatus(app.runtime().db).needsUpgrade,false);
     assert.equal(doc.querySelector('#toast').textContent,'');
   },{initial,reconcileStatus:409});
   await application(async({requests,doc})=>{
-    assert.equal(requests.length,3,'a persistent conflict is not retried in a loop');
+    assert.equal(requests.length,4,'a persistent conflict is not retried in a loop');
     assert.match(doc.querySelector('#toast').textContent,/자동 등록을 완료하지 못했습니다/);
   },{initial,reconcileStatus:409,concurrentReady:false});
 });

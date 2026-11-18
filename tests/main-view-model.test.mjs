@@ -195,7 +195,7 @@ test('top generation navigation keeps event titles local, restores the workspace
     {id:'person-g3',kind:'character',name:'3세대에만 등장',revision:1,data:{generation_model_version:1}},
   );
   fixture.relations.push({id:'generation-person-g3',type:'generation_appearance',source_id:'person-g3',target_id:'g3',revision:1,data:{generation_schema:1,affiliations:[],ideology_rank:'',narrative:''}});
-  globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>String(path).startsWith('/api/timeline')?{events:[],titles:fixture.entities.filter(e=>e.kind==='title'&&e.data?.generation_id===new URL(path,'https://fixture').searchParams.get('generation_id')),states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
+  globalThis.fetch=async(path,options={})=>{requests.push({path,method:options.method||'GET'});return {ok:true,status:200,json:async()=>path==='/api/works/time'?{work:{id:'registered-time-work'},expected_write_revision:'fixture'}:String(path).startsWith('/api/timeline')?{events:[],titles:fixture.entities.filter(e=>e.kind==='title'&&e.data?.generation_id===new URL(path,'https://fixture').searchParams.get('generation_id')),states:[],relations:[],uncertain:[],conflicts:[]}:structuredClone(fixture)};};
   globalThis.__mainNavigationAtlas=(...args)=>{atlasCalls.push(args);return ()=>{};};
   try {
     let source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
@@ -203,7 +203,8 @@ test('top generation navigation keeps event titles local, restores the workspace
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
       .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
       .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
-      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href))
+      .replace('"/time-initialization.js"',JSON.stringify(new URL('../web/time-initialization.js',import.meta.url).href));
     await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
     const nav=doc.app.innerHTML.match(/<nav class="side-nav"[^>]*>([\s\S]*?)<\/nav>/)[1].replace(/<div id="background-navigation"[\s\S]*?<\/div>/,'');
     assert.equal((nav.match(/<button\b/g)||[]).length,3);

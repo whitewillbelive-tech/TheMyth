@@ -4,6 +4,7 @@ import { normalizeMainContext, mainSection, contextForEntity, scopedEntities, wi
 
 import { renderGenerationCharacter, bindGenerationCharacter, newGenerationCharacter } from "/generation-characters.js";
 import { renderTitleTabs, renderTitleSynopsis, bindTitleSynopsis } from "/title-synopsis.js";
+import { initializeAuthorizedTimeProject } from "/time-initialization.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -2161,8 +2162,11 @@ try {
       if(current.needsUpgrade || current.catalog.conflicts.length) catalogWarning="세대·타이틀 자동 등록을 완료하지 못했습니다. 기존 자료는 유지됩니다. 좌하단 부가 기능에서 다시 확인할 수 있습니다. " + error.message;
     }
   }
+  const timeInitialization=await initializeAuthorizedTimeProject(db,api);
+  if(timeInitialization.state)db=timeInitialization.state;
   render();
-  if(catalogWarning) { toast(catalogWarning,true);setStatus("세대·타이틀 등록 확인 필요"); }
+  const setupWarning=[catalogWarning,timeInitialization.warning].filter(Boolean).join(" ");
+  if(setupWarning) { toast(setupWarning,true);setStatus("최초 자료 등록 확인 필요"); }
 } catch (e) {
   $("#app").innerHTML =
     `<div class="empty"><h1>The Myth</h1><h2>아카이브에 연결할 수 없습니다.</h2><p>${h(e.message)}</p><button class="button primary" onclick="location.reload()">다시 연결</button><p>브라우저에 임시 보관된 편집 내용은 유지됩니다.</p></div>`;

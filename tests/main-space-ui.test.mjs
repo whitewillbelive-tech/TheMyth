@@ -110,6 +110,7 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
     const method=options.method||'GET',body=options.body?JSON.parse(options.body):undefined;requests.push({path,method,body});
     let status=200,result;
     if(path==='/api/state')result=structuredClone(fixture);
+    else if(path==='/api/works/time')result={work:{id:'registered-time-work'},expected_write_revision:'fixture'};
     else if(path==='/api/catalog/reconcile'){
       status=reconcileStatus;if(status<300||concurrentReady)fixture=readyState();
       result=status<300?{unchanged:false}:{detail:'동시에 등록되었습니다.'};
@@ -129,7 +130,8 @@ async function application(run,{initial=readyState(),reconcileStatus=200,concurr
       .replace('"/main-domain.js"',JSON.stringify(new URL('../web/main-domain.js',import.meta.url).href))
       .replace('"/main-view-model.js"',JSON.stringify(new URL('../web/main-view-model.js',import.meta.url).href))
       .replace('"/generation-characters.js"',JSON.stringify(new URL('../web/generation-characters.js',import.meta.url).href))
-      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href));
+      .replace('"/title-synopsis.js"',JSON.stringify(new URL('../web/title-synopsis.js',import.meta.url).href))
+      .replace('"/time-initialization.js"',JSON.stringify(new URL('../web/time-initialization.js',import.meta.url).href));
     const boot=source.lastIndexOf('\ntry {\n  await refresh');assert.ok(boot>0,'Application bootstrap must be present');
     // Rendering has separate navigation coverage. Keep bootstrap and actual
     // dialogs untouched while suppressing layout work in this form fixture.

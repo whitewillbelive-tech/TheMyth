@@ -89,3 +89,4 @@ yarn-error.log*
 /public/title-synopsis.js
 /public/story-workspace.js
 /public/work-characters-domain.js
+/public/time-initialization.js
