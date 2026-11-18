@@ -87,3 +87,5 @@ yarn-error.log*
 /public/generation-characters.js
 /public/generation-character-domain.js
 /public/title-synopsis.js
+/public/story-workspace.js
+/public/work-characters-domain.js

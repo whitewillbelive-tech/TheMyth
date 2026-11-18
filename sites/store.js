@@ -2,6 +2,7 @@
 // Reads are one snapshot; every multi-record change commits as one guarded batch.
 import { validateWorkspaceRecord } from './main-workspace.js';
 import { assertSpatialWriteAllowed } from './spatial-permissions.js';
+import { validateWorkCharacterRecord } from './work-characters.js';
 export const COLLECTIONS = ['entities','relations','groups','memberships','states','documents','chapters','versions'];
 export const WRITABLE = COLLECTIONS.slice(0,-1);
 const KINDS = new Set(['generation','title','character','organization','event','space','planet','civilization','setting','thought','thinker','custom']);
@@ -124,6 +125,10 @@ export class Store {
     if(!object(data)) fail('확장 정보(data)는 객체여야 합니다.');
     for(const [key,value] of Object.entries(data)) {
       if(['time','start','end'].includes(key)&&object(value)&&Object.hasOwn(value,'mode')) this.time(value);
+      else if(key==='work_id'&&value!=null) {
+        const work=this.existsReference(value,['documents','entities'],['story','title']);
+        if(!work) fail('연결할 작품을 찾을 수 없습니다.');
+      }
       else if(key.endsWith('_id')&&value!=null) { if(typeof value!=='string') fail('연결 ID는 문자열 또는 미정(null)이어야 합니다.'); this.existsReference(value); }
       else if(key.endsWith('_ids')&&value!=null) {
         if(!Array.isArray(value)) fail('연결 ID 목록은 배열이어야 합니다.');
@@ -164,6 +169,7 @@ export class Store {
     }
     if(['relations','states'].includes(table)) { const start=numeric(r.start),end=numeric(r.end,true); if(start!=null&&end!=null&&start>end) fail('관계·상태의 시작은 종료보다 늦을 수 없습니다.'); }
     validateWorkspaceRecord(this,table,r);
+    validateWorkCharacterRecord(this,table,r);
   }
   create(table,values) {
     const r={id:values.id||newId(),revision:1,created_at:now(),updated_at:now(),deleted_at:null};

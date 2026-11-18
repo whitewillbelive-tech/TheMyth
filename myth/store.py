@@ -220,6 +220,13 @@ class Store:
         for key, value in data.items():
             if key in ("time", "start", "end") and isinstance(value, dict) and "mode" in value:
                 self.time(db, value)
+            elif key == "work_id" and value is not None:
+                if not isinstance(value, str) or not value:
+                    fail("작품 연결 ID는 유효한 문자열이어야 합니다.")
+                work = self.get(db, "documents", value, False)
+                title = self.get(db, "entities", value, False)
+                if not (work and work.get("kind") == "story" or title and title.get("kind") == "title"):
+                    fail("작품 연결은 외전 또는 본편 타이틀을 가리켜야 합니다.")
             elif key.endswith("_id") and value is not None:
                 if not isinstance(value, str):
                     fail("연결 ID는 문자열 또는 미정(null)이어야 합니다.")
@@ -648,7 +655,7 @@ def timeline(state, year=None, title_id=None, generation_id=None, include_common
     if generation_id or title_id:
         states = [record for record in states if in_scope(by_id.get(record.get("entity_id")))]
         def relation_in_scope(record):
-            if record.get("data", {}).get("title_id") and not in_scope(record):
+            if (record.get("data", {}).get("title_id") or record.get("data", {}).get("work_id")) and not in_scope(record):
                 return False
             title_endpoints = [record_id for record_id in (record.get("source_id"), record.get("target_id")) if by_id.get(record_id, {}).get("kind") == "title"]
             if title_id and title_endpoints and title_id not in title_endpoints:

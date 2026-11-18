@@ -2,6 +2,8 @@ import { Store, WRITABLE, fail, validId } from './store.js';
 import { reconcileCatalog, createCharacter, setCharacterAppearances, updateTitleSettings, validateWorkspaceMutation, upgradeGenerationModel, setCharacterGenerations, updateGenerationSettings, updateTitleStory } from './main-workspace.js';
 import { spatialWritesAllowed } from './spatial-permissions.js';
 import { matchesTitleScope } from '../web/main-domain.js';
+import { getWorkContext, getWorkCharacter, createWorkCharacter, updateWorkProfile, updateCommonCharacter, promoteWorkFields, previewIdentityLink, linkWorkIdentity, unlinkWorkIdentity } from './work-characters.js';
+import { timeProjectStatus, importTimeProject } from './time-project.js';
 
 const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin'};
 const json = (value,status=200,extra={}) => new Response(JSON.stringify(value),{status,headers:{...headers,'Content-Type':'application/json; charset=utf-8',...extra}});
@@ -69,6 +71,25 @@ export async function handleApi(request,env) {
     const store=await Store.load(env);
     store.spatialWritesAllowed=spatialWritesAllowed(request);
     if(path==='/api/state'&&method==='GET') return json(store.state());
+    if(path==='/api/works/time'&&method==='GET') return json(timeProjectStatus(store));
+    if(path==='/api/works/time/import'&&method==='POST') {
+      const result=importTimeProject(store,await body(request));await store.commit();return json(result);
+    }
+    const workContext=path.match(/^\/api\/works\/([^/]+)\/context$/);
+    if(workContext&&method==='GET') return json(getWorkContext(store,pathId(workContext[1])));
+    const workCreate=path.match(/^\/api\/works\/([^/]+)\/characters$/);
+    if(workCreate&&method==='POST') {
+      const result=createWorkCharacter(store,pathId(workCreate[1]),await body(request));await store.commit();return json(result,201);
+    }
+    const workCharacter=path.match(/^\/api\/work-characters\/([^/]+)\/([^/]+)(?:\/(profile|common|promote|identity-preview|identity-link|identity-unlink))?$/);
+    if(workCharacter) {
+      const localId=pathId(workCharacter[1]),workId=pathId(workCharacter[2]),action=workCharacter[3];
+      if(!action&&method==='GET') return json(getWorkCharacter(store,localId,workId));
+      if(action==='identity-preview'&&method==='GET') return json(previewIdentityLink(store,localId,workId,pathId(url.searchParams.get('target_id'))));
+      const mutation=action==='profile'&&method==='PATCH'?updateWorkProfile:action==='common'&&method==='PATCH'?updateCommonCharacter:action==='promote'&&method==='POST'?promoteWorkFields:action==='identity-link'&&method==='POST'?linkWorkIdentity:action==='identity-unlink'&&method==='POST'?unlinkWorkIdentity:null;
+      if(mutation){const result=mutation(store,localId,workId,await body(request));await store.commit();return json(result);}
+      fail('허용되지 않는 요청 방식입니다.',405);
+    }
     if(path==='/api/workspace/upgrade-generation-model'&&method==='POST') {
       await body(request);const result=upgradeGenerationModel(store);await store.commit();return json(result);
     }
@@ -114,12 +135,12 @@ export async function handleApi(request,env) {
     if(collection==='entities'&&id&&action==='merge-preview'&&method==='GET') return json(store.mergePreview(id,url.searchParams.get('source_id')));
     if(collection==='entities'&&id&&action==='merge'&&method==='POST') {const payload=await body(request),result=store.merge(id,payload.source_id,payload.field_choices??{});await store.commit();return json(result);}
     if(collection==='entities'&&id&&action==='split'&&method==='POST') {const result=store.split(id,await body(request));await store.commit();return json(result);}
-    if(collection==='versions'&&id&&action==='restore'&&method==='POST') {const result=store.restoreVersion(id);await store.commit();return json(result);}
+    if(collection==='versions'&&id&&action==='restore'&&method==='POST') {const version=store.get('versions',id);if(version.target_type==='relations'&&version.snapshot?.type==='identity_link')fail('동일인 연결은 최신 인물 비교 화면에서 다시 연결하세요.');const result=store.restoreVersion(id);await store.commit();return json(result);}
     if(collection==='documents'&&id&&action==='export'&&method==='GET') return exportDocument(store,id,url.searchParams.get('format')??'md',url.searchParams.get('chapter_id'));
     if(collection==='versions'&&!id&&method==='GET') return json(store.all('versions'));
     if(!WRITABLE.includes(collection)) fail('경로를 찾을 수 없습니다.',404);
     if(action) {
-      if(action==='restore'&&collection!=='memberships'&&method==='POST') {const result=store.delete(collection,id,true);await store.commit();return json(result);}
+      if(action==='restore'&&collection!=='memberships'&&method==='POST') {if(collection==='relations'&&store.get(collection,id).type==='identity_link')fail('동일인 연결은 최신 인물 비교 화면에서 다시 연결하세요.');const result=store.delete(collection,id,true);await store.commit();return json(result);}
       fail('경로를 찾을 수 없습니다.',404);
     }
     if(method==='GET') return json(id?store.get(collection,id):store.all(collection));
@@ -128,6 +149,7 @@ export async function handleApi(request,env) {
     else if(method==='PATCH'&&id) {previous=store.get(collection,id);result=store.update(collection,id,await body(request));}
     else if(method==='DELETE'&&id) result=store.delete(collection,id);
     else fail('허용되지 않는 요청 방식입니다.',405);
+    if(collection==='relations'&&(result.type==='identity_link'||previous?.type==='identity_link'))fail('동일인 연결은 본편 인물 연결·해제 화면을 사용하세요. 외전의 유효 정보를 보존해야 합니다.');
     if(['POST','PATCH'].includes(method)) validateWorkspaceMutation(store,collection,result,previous);
     await store.commit(); return json(result);
   } catch(error) {
@@ -184,7 +206,7 @@ export function timeline(state, year = null, title_id = null, {generationId = nu
   if(scoped) {
     states=states.filter(record=>visibleEntity(record.entity_id));
     relations=relations.filter(record=>{
-      if(record.data?.title_id&&!matchesTitleScope(state,record,scope))return false;
+      if((record.data?.title_id||record.data?.work_id)&&!matchesTitleScope(state,record,scope))return false;
       const titleEndpoints=[record.source_id,record.target_id].filter(id=>by_id.get(id)?.kind==='title');
       if(title_id&&titleEndpoints.length&&!titleEndpoints.includes(title_id))return false;
       return visibleEntity(record.source_id)&&visibleEntity(record.target_id);

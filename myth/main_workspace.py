@@ -25,6 +25,61 @@ PROFILE_FIELDS = {
 }
 EVENT_RELATIONS = {"related", "before", "after", "causes", "caused_by"}
 
+# Hosted work profiles use the same original JSON collections. Keep local
+# backup/restore strict without interpreting their schema as a main title slot.
+WORK_PROFILE_FIELDS = {
+    "name", "english_name", "aliases", "description", "role", "occupation",
+    "goals", "activities", "condition", "ideology", "notes", "time",
+}
+
+
+def _validate_work_profile(store, db, record):
+    data = record.get("data", {})
+    source = store.get(db, "entities", record.get("source_id"), False)
+    if not source or source.get("kind") != "character":
+        fail("외전 인물 연결의 원본은 인물이어야 합니다.")
+    if record.get("type") == "work_appearance":
+        work = store.get(db, "documents", record.get("target_id"), False)
+        if not work or work.get("kind") != "story" or data.get("profile_schema") != 1:
+            fail("외전 등장 정보는 인물과 외전 원고의 연결이어야 합니다.")
+        overrides = data.get("overrides", {})
+        inherited = data.get("inherit_fields", [])
+        notes = data.get("override_notes", {})
+        if (not isinstance(overrides, dict) or not isinstance(inherited, list)
+                or not isinstance(notes, dict)
+                or any(not isinstance(key, str) or key not in WORK_PROFILE_FIELDS for key in inherited)
+                or len(inherited) != len(set(inherited))
+                or set(overrides) - WORK_PROFILE_FIELDS
+                or set(overrides).intersection(inherited)):
+            fail("외전 인물 설정 형식이 잘못되었습니다.")
+        for key, value in overrides.items():
+            if key == "aliases":
+                if not isinstance(value, list) or any(not isinstance(alias, str) for alias in value):
+                    fail("외전 별칭은 텍스트 목록이어야 합니다.")
+            elif key == "time":
+                if not isinstance(value, dict):
+                    fail("외전 시점은 표현 방식이 있는 객체여야 합니다.")
+                store.time(db, value)
+            elif not isinstance(value, str):
+                fail("외전 인물 설정은 텍스트여야 합니다.")
+            if key == "name" and not value.strip():
+                fail("이름 또는 이름 미정을 입력하세요.")
+        if any(key not in WORK_PROFILE_FIELDS or not isinstance(value, str) for key, value in notes.items()):
+            fail("공통 정보와 다른 이유는 올바른 설정 필드의 텍스트여야 합니다.")
+    else:
+        target = store.get(db, "entities", record.get("target_id"), False)
+        work = store.get(db, "documents", data.get("work_id"), False)
+        if not target or target.get("kind") != "character" or not work or work.get("kind") != "story":
+            fail("동일 인물 연결은 인물과 인물 및 해당 외전을 지정해야 합니다.")
+    if not record.get("deleted_at"):
+        for other in store.all(db, "relations"):
+            if other.get("deleted_at") or other.get("id") == record["id"] or other.get("type") != record.get("type") or other.get("source_id") != record.get("source_id"):
+                continue
+            same_work = (other.get("target_id") == record.get("target_id") if record.get("type") == "work_appearance"
+                         else other.get("data", {}).get("work_id") == data.get("work_id"))
+            if same_work:
+                fail("같은 외전에 중복 연결할 수 없습니다.", 409)
+
 
 def normal(value):
     return " ".join(unicodedata.normalize("NFC", str(value or "")).split())
@@ -382,13 +437,15 @@ def update_title_settings(store, db, character_id, title_id, payload):
 def validate_main_record(store, db, table, record):
     """Optional added fields are validated without making legacy fields required."""
     data = record.get("data", {})
+    if table == "relations" and record.get("type") in ("work_appearance", "identity_link"):
+        _validate_work_profile(store, db, record)
     if table == "relations" and (record.get("type") == "generation_appearance" or data.get("generation_schema") == 1):
         source = store.get(db, "entities", record.get("source_id"), False)
         target = store.get(db, "entities", record.get("target_id"), False)
         if record.get("type") != "generation_appearance" or not source or not target or {source.get("kind"), target.get("kind")} != {"character", "generation"}:
             fail("세대별 인물 설정은 인물과 세대의 등장 연결이어야 합니다.")
         _validate_generation_profile(store, db, data, active_references=False)
-    if table == "relations" and data.get("profile_schema") == 1:
+    if table == "relations" and record.get("type") != "work_appearance" and data.get("profile_schema") == 1:
         source = store.get(db, "entities", record.get("source_id"), False)
         target = store.get(db, "entities", record.get("target_id"), False)
         if record.get("type") != "appearance" or not source or not target or {source.get("kind"), target.get("kind")} != {"character", "title"}:
@@ -517,6 +574,18 @@ def matches_title_scope(state, item, generation_id=None, title_id=None, include_
         return True
     if not item:
         return include_common
+    story_ids = {row["id"] for row in state.get("documents", []) if row.get("kind") == "story" and not row.get("deleted_at")}
+    # Explicit story ownership wins over inferred title links. Sharing a
+    # participant does not move the story's events/rules into the main work.
+    if item.get("kind") != "character" and item.get("data", {}).get("work_id") in story_ids:
+        return False
+    story_only = item.get("data", {}).get("work_id") in story_ids or item.get("kind") == "character" and any(
+        row.get("type") == "work_appearance" and not row.get("deleted_at")
+        and row.get("source_id") == item["id"] and row.get("target_id") in story_ids
+        for row in state.get("relations", [])
+    )
+    if story_only and not title_ids_for_entity(state, item) and not generation_ids_for_entity(state, item):
+        return False
     if generation_id and not title_id:
         ids = generation_ids_for_entity(state, item)
         if item.get("kind") == "character":

@@ -95,7 +95,7 @@ let ui = {
 };
 if (ui.tab === "main" && ui.view === "overview") ui.view = "character";
 let saveStatus = "모든 변경사항 저장됨";
-let disposeAtlas, generationCharacterBinding, titleSynopsisBinding;
+let disposeAtlas, generationCharacterBinding, titleSynopsisBinding, storyWorkspaceBinding;
 let documentTimer,
   pendingWrite = Promise.resolve(),
   toastTimer;
@@ -939,19 +939,27 @@ function writing() {
         "new-document",
         "",
         "primary",
-      ),
+      ) + (ui.view === "story" && !active("documents").some(row=>row.kind==="story" && (row.data?.import_key==="time:work:v1" || row.data?.story_workspace && row.name==="시간")) ? button("《시간》 설정 등록","import-time-canon","","ghost small") : ""),
     ) +
-    `<div class="split-view writing-view"><section class="list-panel"><div class="list-heading"><span>${ui.view === "book" ? "서적 목록" : "외전 목록"}</span><span class="count">${docs.length}</span></div>${docs.map((x) => `<button class="list-row ${ui.selected === x.id ? "selected" : ""}" data-action="select-doc" data-id="${x.id}"><span class="list-name">${h(x.name)}</span><span class="list-meta">${h(x.status || "초안")} · ${h(x.author_id ? label(x.author_id) : "저자 미정")}</span></button>`).join("") || empty("새 원고를 시작하세요", "아직 등록된 작품이 없습니다.")}</section><section class="detail-panel">${d ? documentDetail(d) : empty("아직 쓰이지 않은 이야기", "작품을 선택하거나 새 원고를 만들어 집필을 시작하세요.", button("+ 원고 시작", "new-document", "", "primary"))}</section></div>`
+    `<div class="split-view writing-view ${d?.kind === "story" && storyMode(d) === "settings" ? "story-settings-view" : ""}"><section class="list-panel"><div class="list-heading"><span>${ui.view === "book" ? "서적 목록" : "외전 목록"}</span><span class="count">${docs.length}</span></div>${docs.map((x) => `<button class="list-row ${ui.selected === x.id ? "selected" : ""}" data-action="select-doc" data-id="${x.id}"><span class="list-name">${h(x.name)}${x.data?.provisional_title ? ' <small class="story-provisional">가제</small>' : ""}</span><span class="list-meta">${h(x.status || "초안")} · ${h(x.author_id ? label(x.author_id) : "저자 미정")}</span></button>`).join("") || empty("새 원고를 시작하세요", "아직 등록된 작품이 없습니다.")}</section><section class="detail-panel">${d ? documentDetail(d) : empty("아직 쓰이지 않은 이야기", "작품을 선택하거나 새 원고를 만들어 집필을 시작하세요.", button("+ 원고 시작", "new-document", "", "primary"))}</section></div>`
   );
 }
+function storyMode(d) {
+  return ui.storyModes?.[d.id] || (d.data?.story_workspace || d.data?.provisional_title ? "settings" : "manuscript");
+}
+function storyModeTabs(d) {
+  if(d.kind!=="story") return "";
+  return `<nav class="story-mode-tabs" aria-label="외전 작업 방식"><button type="button" class="button ${storyMode(d)==="settings"?"active":"ghost"}" data-action="story-mode" data-id="settings">설정 관리</button><button type="button" class="button ${storyMode(d)==="manuscript"?"active":"ghost"}" data-action="story-mode" data-id="manuscript">원고 집필</button></nav>`;
+}
 function documentDetail(d) {
+  if(d.kind==="story" && storyMode(d)==="settings")return `<div class="detail-header"><div><span class="eyebrow">SIDE STORY / WORLD NOTES</span><h2>${h(d.name)} ${d.data?.provisional_title?'<small class="story-provisional">가제</small>':""}</h2><p class="muted">설정과 원고를 구분하여 관리합니다.</p></div><div class="actions">${button("작품 정보","edit-document",d.id,"ghost small")}</div></div>${storyModeTabs(d)}<div id="story-workspace-root"><p class="muted">설정 작업 영역을 불러오는 중…</p></div>`;
   const chapters = sorted(
       active("chapters").filter((c) => c.document_id === d.id),
     ),
     c = chapters.find((x) => x.id === ui.chapter);
   const draft = localDrafts[(c ? "chapter:" : "document:") + (c?.id || d.id)];
   const body = draft?.body ?? c?.body ?? d.body ?? "";
-  return `<div class="detail-header"><div><span class="eyebrow">${d.kind === "book" ? "PHILOSOPHY MANUSCRIPT" : "SIDE STORY MANUSCRIPT"}</span><h2>${h(d.name)}</h2><div class="reference-chips">${tag(d.status || "초안")}${tag({ draft: "설정 초안", confirmed: "확정", noncanon: "비정사", undecided: "미정" }[d.canon_status] || "미정")}${d.author_id ? tag(label(d.author_id)) : ""}</div></div><div class="actions">${button("작품 정보", "edit-document", d.id, "ghost small")}${button("삭제", "delete-document", d.id, "danger small")}</div></div><div class="writing-layout"><aside class="chapter-list"><div class="list-heading"><strong>목차</strong>${button("+ 장", "new-chapter", d.id, "ghost small")}</div><button class="chapter-row ${!c ? "selected" : ""}" data-action="select-chapter" data-id="">${d.kind === "book" ? "서문 · 전체 메모" : "본문"}</button>${chapters.map((ch) => `<div class="chapter-item"><button class="chapter-row ${ch.id === c?.id ? "selected" : ""}" style="padding-left:${ch.parent_id ? 24 : 12}px" data-action="select-chapter" data-id="${ch.id}">${ch.parent_id ? "↳ " : ""}${h(ch.name)}</button><div class="chapter-controls">${button("↑", "chapter-up", ch.id, "ghost small")}${button("↓", "chapter-down", ch.id, "ghost small")}${button("⋯", "edit-chapter", ch.id, "ghost small")}</div></div>`).join("")}<div class="writing-note">자동 저장되는 원고<br><span>장·절을 자유롭게 구성하고<br>이전 버전으로 돌아갈 수 있습니다.</span></div></aside><div class="writing-editor"><div class="editor-toolbar"><strong>${h(c?.name || (d.kind === "book" ? "서문 · 전체 메모" : "본문"))}</strong><div class="actions"><span id="word-count" class="muted">${body.length.toLocaleString()}자</span>${button("지금 저장", "save-manuscript", d.id, "small ghost")}<a data-export="true" class="button small ghost" href="/api/documents/${d.id}/export?format=md${c ? "&chapter_id=" + c.id : ""}" download>Markdown ↓</a><a data-export="true" class="button small ghost" href="/api/documents/${d.id}/export?format=txt${c ? "&chapter_id=" + c.id : ""}" download>TXT ↓</a></div></div><textarea id="manuscript" class="manuscript" aria-label="원고 본문" data-document="${d.id}" data-chapter="${c?.id || ""}" placeholder="첫 문장부터, 당신의 이야기를 시작하세요.\n\n작성한 원고는 잠시 후 자동 저장됩니다.">${h(body)}</textarea><p class="manuscript-status muted">자동 저장 · 외전의 설정은 본편 데이터에 자동 반영되지 않습니다.</p>${draftRecovery((c ? "chapter:" : "document:") + (c?.id || d.id))}</div></div><div class="detail-sections">${referenceSection(d.id)}${historySection(c ? "chapters" : "documents", c?.id || d.id)}</div>`;
+  return `<div class="detail-header"><div><span class="eyebrow">${d.kind === "book" ? "PHILOSOPHY MANUSCRIPT" : "SIDE STORY MANUSCRIPT"}</span><h2>${h(d.name)}</h2><div class="reference-chips">${tag(d.status || "초안")}${tag({ draft: "설정 초안", confirmed: "확정", noncanon: "비정사", undecided: "미정" }[d.canon_status] || "미정")}${d.author_id ? tag(label(d.author_id)) : ""}</div></div><div class="actions">${button("작품 정보", "edit-document", d.id, "ghost small")}${button("삭제", "delete-document", d.id, "danger small")}</div></div>${storyModeTabs(d)}<div class="writing-layout"><aside class="chapter-list"><div class="list-heading"><strong>목차</strong>${button("+ 장", "new-chapter", d.id, "ghost small")}</div><button class="chapter-row ${!c ? "selected" : ""}" data-action="select-chapter" data-id="">${d.kind === "book" ? "서문 · 전체 메모" : "본문"}</button>${chapters.map((ch) => `<div class="chapter-item"><button class="chapter-row ${ch.id === c?.id ? "selected" : ""}" style="padding-left:${ch.parent_id ? 24 : 12}px" data-action="select-chapter" data-id="${ch.id}">${ch.parent_id ? "↳ " : ""}${h(ch.name)}</button><div class="chapter-controls">${button("↑", "chapter-up", ch.id, "ghost small")}${button("↓", "chapter-down", ch.id, "ghost small")}${button("⋯", "edit-chapter", ch.id, "ghost small")}</div></div>`).join("")}<div class="writing-note">자동 저장되는 원고<br><span>장·절을 자유롭게 구성하고<br>이전 버전으로 돌아갈 수 있습니다.</span></div></aside><div class="writing-editor"><div class="editor-toolbar"><strong>${h(c?.name || (d.kind === "book" ? "서문 · 전체 메모" : "본문"))}</strong><div class="actions"><span id="word-count" class="muted">${body.length.toLocaleString()}자</span>${button("지금 저장", "save-manuscript", d.id, "small ghost")}<a data-export="true" class="button small ghost" href="/api/documents/${d.id}/export?format=md${c ? "&chapter_id=" + c.id : ""}" download>Markdown ↓</a><a data-export="true" class="button small ghost" href="/api/documents/${d.id}/export?format=txt${c ? "&chapter_id=" + c.id : ""}" download>TXT ↓</a></div></div><textarea id="manuscript" class="manuscript" aria-label="원고 본문" data-document="${d.id}" data-chapter="${c?.id || ""}" placeholder="첫 문장부터, 당신의 이야기를 시작하세요.\n\n작성한 원고는 잠시 후 자동 저장됩니다.">${h(body)}</textarea><p class="manuscript-status muted">자동 저장 · 외전의 설정은 본편 데이터에 자동 반영되지 않습니다.</p>${draftRecovery((c ? "chapter:" : "document:") + (c?.id || d.id))}</div></div><div class="detail-sections">${referenceSection(d.id)}${historySection(c ? "chapters" : "documents", c?.id || d.id)}</div>`;
 }
 function trashView() {
   const rows = [
@@ -980,6 +988,7 @@ function render() {
   if (ui.tab === "main" && ui.view === "background") ui.view = "spaces";
   generationCharacterBinding?.();generationCharacterBinding=undefined;
   titleSynopsisBinding?.dispose();titleSynopsisBinding=undefined;
+  storyWorkspaceBinding?.dispose();storyWorkspaceBinding=undefined;
   disposeAtlas?.();
   disposeAtlas = undefined;
   persist();
@@ -1004,6 +1013,20 @@ function render() {
   }
   bindForms();
   bindMainForms();
+  const storyRoot=$("#story-workspace-root");
+  if(storyRoot) {
+    const story=lookup(ui.selected);
+    import("/story-workspace.js").then(({mountStoryWorkspace})=>{
+      if($("#story-workspace-root")!==storyRoot)return;
+      storyWorkspaceBinding=mountStoryWorkspace(storyRoot,{document:story,getState:()=>db,api,drafts:localDrafts,persistDrafts:draftsPersist,onStatus:setStatus,onChanged:()=>refresh(false),onError:error=>toast(error.message,true),confirm:message=>confirm(message),openEntity:async id=>{
+        await flushBeforeNavigation();const e=lookup(id);if(!e)return;
+        ui.selected=id;ui.query="";ui.title="";ui.kind="";ui.group="";ui.chapter=null;
+        ui.tab=["thought","thinker"].includes(e.kind)?"writing":"main";
+        ui.view=e.kind==="character"?"all-characters":["event","setting","thought","thinker"].includes(e.kind)?e.kind:["title","generation"].includes(e.kind)?"generations":"archive";
+        if(ui.tab==="main")setMainContext(contextForEntity(db,e,mainContext()));render();
+      },openStory:async id=>{await flushBeforeNavigation();ui.tab="writing";ui.view="story";ui.selected=id;ui.chapter=null;ui.storyModes||={};ui.storyModes[id]="settings";render();}});
+    }).catch(error=>{if($("#story-workspace-root")===storyRoot)storyRoot.innerHTML=`<p class="conflict">${h(error.message)}</p>`;toast("설정 작업 영역을 불러오지 못했습니다. 원고와 저장 자료는 유지됩니다.",true);});
+  }
   const characterRoot=$("[data-generation-character]");
   if(characterRoot) generationCharacterBinding=bindGenerationCharacter(characterRoot,lookup(characterRoot.dataset.generationCharacter),generationCharacterContext());
   if(ui.view==="event") {
@@ -1259,6 +1282,7 @@ function docEditor(d) {
     )}${field("소개·기획 의도", textarea("description", d.description), true)}${field("서적 유형", input("book_type", d.data?.book_type, "철학서 / 자기계발서 / 기타"))}${field("구성 메모", textarea("notes", d.data?.notes), true)}</div><details><summary>세계관 내 집필 시점·배경 시간대</summary>${timeFields("time", d.data?.time)}</details><p class="callout">외전의 초안과 책 속 주장은 공통 세계관 데이터를 자동으로 변경하지 않습니다.</p>`,
     async (fd) => {
       const body = {
+        ...(existing ? {revision:d.revision} : {}),
         kind: d.kind,
         name: fd.get("name"),
         description: fd.get("description"),
@@ -1481,6 +1505,7 @@ async function changeView(view, tab, generationId) {
 async function flushBeforeNavigation() {
   await generationCharacterBinding?.flush?.();
   await titleSynopsisBinding?.flush?.();
+  await storyWorkspaceBinding?.flush?.();
   if ($("#manuscript") && documentTimer) {
     await saveManuscript();
   }
@@ -1900,6 +1925,18 @@ document.addEventListener(
       ui.selected = id;
       render();
       return;
+    }
+    if (action === "import-time-canon") {
+      await flushBeforeNavigation();
+      const preview=await api("/works/time");
+      openDialog("《시간》 최신 확정 설정 반영",`<p class="callout">외전과 인물·칭호·사건·설정을 기존 서버 저장소에 반영합니다. 이미 반영한 자료와 사용자 편집은 보존하며, 삭제한 자료를 복원하거나 확인되지 않은 Library 담론을 생성하지 않습니다.</p><p>현재 《시간》 ${preview.work ? "등록됨 · 기존 작품을 재사용합니다." : "미등록 · 새 외전으로 등록합니다."}</p><p class="muted">기존 담론 120개는 원문을 확보한 범위에서만 반영됩니다. 현재 확인된 항목: ${h(preview.research_expected?.verified_items ?? 0)}개.</p><label class="checkbox-row"><input type="checkbox" name="confirm_import" required>반영 범위와 미확인 원문 범위를 확인했습니다.</label>`,async fd=>{
+        if(!fd.get("confirm_import"))throw new Error("반영 범위를 확인해 주세요.");
+        const result=await api("/works/time/import","POST",{expected_write_revision:preview.expected_write_revision});
+        await refresh(false);ui.tab="writing";ui.view="story";ui.selected=result.work.id;ui.chapter=null;ui.storyModes||={};ui.storyModes[result.work.id]="settings";render();toast("《시간》 설정을 반영했습니다.");
+      },"설정 반영",true);return;
+    }
+    if (action === "story-mode") {
+      await flushBeforeNavigation();ui.storyModes||={};ui.storyModes[ui.selected]=id;render();return;
     }
     if (action === "select-doc") {
       await flushBeforeNavigation();

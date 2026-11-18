@@ -177,6 +177,12 @@ export function titleIdsForEntity(state, item, visited = new Set()) {
 }
 export function matchesTitleScope(state, item, { generationId = '', titleId = '', includeCommon = true } = {}) {
   if (!generationId && !titleId) return true;
+  // Story-only settings are not unassigned main-story common material. A
+  // character may be shared globally without appearing in every generation.
+  const storyIds = new Set(rows(state, 'documents').filter(row => row.kind === 'story').map(row => row.id));
+  if (item?.kind !== 'character' && storyIds.has(item?.data?.work_id)) return false;
+  const storyOnly = storyIds.has(item?.data?.work_id) || item?.kind === 'character' && rows(state, 'relations').some(row => active(row) && row.type === 'work_appearance' && row.source_id === item.id && storyIds.has(row.target_id));
+  if (storyOnly && !titleIdsForEntity(state, item).length && !generationIdsForEntity(state, item).length) return false;
   if(generationId&&!titleId) {
     const ids=generationIdsForEntity(state,item);
     return ids.length?ids.includes(generationId):includeCommon;

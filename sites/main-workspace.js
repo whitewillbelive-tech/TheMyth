@@ -36,7 +36,7 @@ export function validateWorkspaceRecord(store, table, record) {
     if(!generationAppearanceId(store.state(),record))fail('세대별 정보는 하나의 인물과 세대를 연결해야 합니다.');
     validateGenerationSettings(store,record.data,{activeReferences:false});
   }
-  if (table === 'relations' && record.data?.profile_schema === 1) {
+  if (table === 'relations' && record.type !== 'work_appearance' && record.data?.profile_schema === 1) {
     const state = store.state(), titleId = appearanceTitleId(state, record);
     if (!titleId) fail('작품별 설정은 하나의 인물과 타이틀을 연결해야 합니다.');
     validateProfileFields(store, record.data.overrides ?? {}, { activeReferences: false });
